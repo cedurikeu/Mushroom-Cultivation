@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Dashboard</title>
+    <link rel="stylesheet" href="./building-dashboard.css" />
+  </head>
+  <body>
+    <div class="container">
+      <div class="group-building">
+        <div class="building"></div>
+        <div class="window-group">
+          <div class="window-1"></div>
+          <div class="window-2"></div>
+          <div class="window-3"></div>
+          <div class="building-base"></div>
+        </div>
+      </div>
+
+      <!-- Updated Circles Structure -->
+      <!-- Elevator -->
+      <div class="circle circle-1">
+        <div class="elevator-sliding-door">
+          <div class="sliding-door-1"></div>
+          <div class="sliding-door-2"></div>
+        </div>
+        <div class="elevator-condition">
+          <h3>Elevator Door Condition:</h3>
+          <div class="elevator-vibration">
+            <h5>
+              Vibration:
+              <div id="vibration-value" class="value"></div>
+            </h5>
+          </div>
+          <div class="elevator-temperature">
+            <h5>
+              Temperature:
+              <div id="temperature-value" class="value"></div>
+            </h5>
+          </div>
+          <div class="elevator-power">
+            <h5>
+              Power:
+              <div id="power-value" class="value"></div>
+            </h5>
+          </div>
+          <div class="elevator-health">
+            <h4>
+              Health:
+              <div id="health-status" class="health"></div>
+            </h4>
+          </div>
+        </div>
+      </div>
+      <!-- Lift -->
+      <div class="circle circle-2">
+        <div class="motor"></div>
+        <div class="motor-pole"></div>
+        <div class="lift-condition">
+          <h3>Lift Condition:</h3>
+          <div class="lift-vibration">
+            <h5>
+              Vibration:
+              <div id="vibration-value" class="value"></div>
+            </h5>
+          </div>
+          <div class="lift-temperature">
+            <h5>
+              Temperature:
+              <div id="temperature-value" class="value"></div>
+            </h5>
+          </div>
+          <div class="lift-power">
+            <h5>
+              Power:
+              <div id="power-value" class="value"></div>
+            </h5>
+          </div>
+          <div class="elevator-health">
+            <h4>
+              Health:
+              <div id="health-status" class="health"></div>
+            </h4>
+          </div>
+        </div>
+      </div>
+      <!-- Automated -->
+      <div class="circle circle-3">
+        <div class="sliding-door-3"></div>
+        <div class="sliding-door-4"></div>
+        <div class="ASD-condition">
+          <h3>Sliding Door Condition:</h3>
+          <div class="ASD-vibration">
+            <h5>
+              Vibration:
+              <div id="vibration-value" class="value"></div>
+            </h5>
+          </div>
+          <div class="ASD-temperature">
+            <h5>
+              Temperature:
+              <div id="temperature-value" class="value"></div>
+            </h5>
+          </div>
+          <div class="ASD-power">
+            <h5>
+              Power:
+              <div id="power-value" class="value"></div>
+            </h5>
+          </div>
+          <div class="elevator-health">
+            <h4>
+              Health:
+              <div id="health-status" class="health"></div>
+            </h4>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script src="./building-dashboard.js"></script>
+  </body>
+</html>
