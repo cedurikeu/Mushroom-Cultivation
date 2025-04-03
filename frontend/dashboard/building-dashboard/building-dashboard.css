@@ -1,0 +1,272 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+  font-family: Arial, sans-serif;
+}
+
+body {
+  background-color: #797979;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  height: 100vh;
+}
+
+/* Wrapper for the Building */
+.group-building {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  position: relative;
+  transition: all 0.3s ease-in-out;
+  cursor: pointer;
+}
+
+/* Main Building */
+.building {
+  width: 380px;
+  height: 280px;
+  background-color: #474747;
+  position: relative;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  transition: transform 0.3s ease-in-out, background-color 0.3s ease-in-out;
+  border-radius: 5px;
+}
+
+/* Windows */
+.window-group {
+  display: flex;
+  flex-direction: column;
+  gap: 25px;
+  position: absolute;
+  top: 30px;
+  left: 50%;
+  transform: translateX(-50%);
+  transition: gap 0.3s ease-in-out;
+}
+
+/* Individual Windows */
+.window-1,
+.window-2,
+.window-3 {
+  width: 340px;
+  height: 60px;
+  background-color: #ffffff;
+  border: none;
+  transition: background-color 0.3s ease-in-out, box-shadow 0.3s ease-in-out;
+}
+
+/* Building Base */
+.building-base {
+  position: absolute;
+  width: 450px;
+  height: 40px;
+  background-color: black;
+  left: 50%;
+  top: 240px;
+  transform: translateX(-50%);
+  transition: 0.3s ease-in-out;
+}
+
+/* Hover Effects */
+.group-building:hover .building {
+  transform: scale(1.02);
+  background-color: #474747ea;
+}
+.group-building:active .building {
+  background-color: #474747e7;
+  transform: scale(1.05);
+}
+.group-building:hover .window-group {
+  gap: 26px;
+}
+.group-building:hover .building-base {
+  width: 460px;
+  top: 250px;
+}
+.group-building:active .building-base {
+  background-color: rgba(67, 67, 67, 0.849);
+}
+.group-building:hover .window-1,
+.group-building:hover .window-2,
+.group-building:hover .window-3 {
+  background-color: #f0f0f0;
+  box-shadow: 0px 0px 10px rgba(255, 255, 255, 0.7);
+}
+
+/* Circles */
+.circle {
+  width: 150px;
+  height: 150px;
+  border-radius: 50%;
+  background-color: #d9d9d9;
+  position: absolute;
+  z-index: 10;
+  display: flex;
+  opacity: 0; /* Hidden by default */
+  transform: scale(0.8);
+  transition: opacity 0.5s ease-in-out, transform 0.5s ease-in-out;
+  pointer-events: none; /* Prevent interaction when hidden */
+}
+
+/* Visible State */
+.circle.active {
+  opacity: 1;
+  transform: scale(1);
+  pointer-events: auto;
+}
+
+/* Ensure Parent Containers Are Visible */
+.sliding-door,
+.lift,
+.elevator-door {
+  position: relative;
+  width: 200px;
+  height: 200px;
+}
+
+/* Adjust Circle Positions */
+.circle-1 {
+  top: 300px;
+  left: 300px;
+}
+
+.circle-2 {
+  top: 25px;
+  left: 695px;
+}
+
+.circle-3 {
+  top: 300px;
+  right: 310px;
+}
+
+.elevator-sliding-door {
+  position: absolute;
+  height: 90px;
+  width: 90px;
+  background-color: #afafaf;
+  top: 30px;
+  right: 30px;
+  overflow: hidden; /* Prevents overflow issues */
+}
+
+.sliding-door-1 {
+  width: 40px;
+  height: 80px;
+  background-color: #e7e7e7;
+  position: absolute;
+  top: 5px;
+  left: 4px;
+  transition: transform 0.5s ease-in-out;
+}
+
+.sliding-door-2 {
+  width: 40px;
+  height: 80px;
+  background-color: #d9d9d9;
+  position: absolute;
+  top: 5px;
+  right: 4px;
+  transition: transform 0.5s ease-in-out;
+}
+.motor {
+  height: 60px;
+  width: 80px;
+  background-color: black;
+  position: absolute;
+  top: 50px;
+  left: 36px;
+  border-radius: 3px;
+}
+.motor-pole {
+  height: 30px;
+  width: 17px;
+  background-color: rgb(255, 255, 255);
+  position: absolute;
+  top: 20px;
+  left: 66px;
+}
+.sliding-door-3 {
+  width: 48px;
+  height: 80px;
+  background-color: #ffffff;
+  position: absolute;
+  top: 35px;
+  left: 25px;
+  transition: transform 0.5s ease-in-out;
+}
+.sliding-door-4 {
+  width: 48px;
+  height: 80px;
+  background-color: #ffffff;
+  position: absolute;
+  top: 35px;
+  left: 77px;
+  transition: transform 0.5s ease-in-out;
+}
+.elevator-condition {
+  color: white;
+  position: relative;
+  top: 5px;
+  left: -228px;
+}
+
+.elevator-condition h3 {
+  font-size: 19px; /* Adjusted to a readable size */
+  margin-bottom: 10px;
+  display: flex;
+  align-items: center;
+  white-space: nowrap;
+}
+.lift-condition h3 {
+  font-size: 19px; /* Adjusted to a readable size */
+  margin-bottom: 10px;
+  display: flex;
+  align-items: center;
+  white-space: nowrap;
+}
+.ASD-condition h3 {
+  font-size: 19px; /* Adjusted to a readable size */
+  margin-bottom: 10px;
+  display: flex;
+  align-items: center;
+  white-space: nowrap;
+}
+
+.elevator-vibration,
+.elevator-temperature,
+.elevator-power,
+.lift-vibration,
+.lift-temperature,
+.lift-power,
+.ASD-vibration,
+.ASD-temperature,
+.ASD-power {
+  margin-bottom: 10px;
+}
+
+.value {
+  color: #e0e0e0;
+  font-weight: bold;
+}
+
+.health {
+  color: #e0e0e0;
+  font-weight: bold;
+}
+.lift-condition {
+  color: white;
+  position: relative;
+  top: 5px;
+  left: 200px;
+}
+.ASD-condition {
+  color: white;
+  position: relative;
+  top: 5px;
+  left: 200px;
+}
