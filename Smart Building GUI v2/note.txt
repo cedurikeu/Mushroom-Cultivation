@@ -1,5 +1,0 @@
-PORT=5000
-MONGO_URI=mongodb+srv://xyvertucio:<db_password>@cluster0.c5qupym.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0
-
-xyvertucio
-dm2uKBFSGfPUflSu
