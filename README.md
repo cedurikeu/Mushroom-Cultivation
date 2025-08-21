@@ -1,178 +1,276 @@
-# 🏠 IoT Raspberry Pi Monitoring System
+# 🍄 Mushroom Environmental Control System
 
-A comprehensive IoT monitoring system that displays real-time sensor data from your Raspberry Pi with MongoDB Atlas cloud storage and local SQLite fallback when WiFi is unavailable.
+A comprehensive web-based environmental monitoring and control system for automated mushroom cultivation using Raspberry Pi.
 
-## ✨ Features
+## Features
 
-- **🔐 Password Protected Dashboard** - Secure access to your sensor data
-- **☁️ MongoDB Atlas Integration** - Cloud storage for your sensor readings
-- **💾 Local SQLite Fallback** - Automatic fallback when WiFi is down
-- **📊 Real-time Data Display** - Live sensor readings with WebSocket updates
-- **📈 Interactive Charts** - Historical data visualization with Chart.js
-- **📱 Responsive Design** - Works on desktop, tablet, and mobile devices
-- **🔄 Automatic Database Switching** - Seamlessly switches between MongoDB and SQLite
+### 🌡️ Environmental Monitoring
+- **Temperature & Humidity**: DHT22 sensor for precise readings
+- **CO2 Levels**: MQ-135 or similar sensor for air quality monitoring
+- **Light Intensity**: Photoresistor for grow light management
+- **Real-time Dashboard**: Live updates via WebSocket
 
-## 🚀 Quick Start
+### 🎛️ Automated Controls
+- **Fogger System**: Automatic misting based on humidity levels
+- **Exhaust Fan**: Air circulation control
+- **LED Grow Lights**: Automated lighting schedule
+- **Manual Override**: Web-based control interface
 
-### 1. Install Dependencies
+### 📊 Data Management
+- **Dual Database Support**: MongoDB Atlas (cloud) with SQLite fallback
+- **Automatic Failover**: Seamless switching when WiFi is lost
+- **Historical Data**: Charts and tables for trend analysis
+- **Data Export**: Easy access to sensor readings
 
-```bash
-pip install -r requirements.txt
-```
+### 🍄 Mushroom-Specific Features
+- **Growth Phase Tracking**: Inoculation → Colonization → Pinning → Fruiting
+- **Phase-Specific Controls**: Automated adjustments per growth stage
+- **Health Status Monitoring**: Real-time condition assessment
+- **Optimal Range Alerts**: Visual indicators for environmental conditions
 
-### 2. Configure Environment
+## Hardware Requirements
 
-Copy the example environment file and edit it:
+### Raspberry Pi Setup
+- Raspberry Pi 4 (recommended) or Pi 3B+
+- MicroSD card (32GB+)
+- Power supply (5V 3A)
 
-```bash
-cp .env.example .env
-```
+### Sensors
+- **DHT22**: Temperature and humidity sensor
+- **MCP3008**: 8-channel ADC for analog sensors
+- **Photoresistor**: Light intensity measurement
+- **MQ-135**: CO2/air quality sensor (or similar)
 
-Edit `.env` with your settings:
-```env
-MONGODB_URI=mongodb+srv://your-username:your-password@your-cluster.mongodb.net/sensor_db?retryWrites=true&w=majority
-SECRET_KEY=your-super-secret-key-here
-DASHBOARD_PASSWORD=your-secure-password
-```
+### Control Hardware
+- **Relay Module**: For fogger, fan, and light control
+- **12V Fogger/Mister**: Ultrasonic or similar
+- **Exhaust Fan**: 12V computer fan or similar
+- **LED Grow Lights**: Full spectrum recommended
+- **Status LEDs**: Visual system status indicators
 
-### 3. Run the Application
-
-```bash
-python app.py
-```
-
-### 4. Access the Dashboard
-
-1. Open your browser to `http://localhost:5000`
-2. Enter your dashboard password (default: `admin123`)
-3. View your real-time sensor data!
-
-## 🔧 Configuration
-
-### MongoDB Atlas Setup
-
-1. Create a free account at [MongoDB Atlas](https://www.mongodb.com/atlas)
-2. Create a new cluster
-3. Create a database user
-4. Get your connection string
-5. Add it to your `.env` file
-
-### Local SQLite Fallback
-
-The system automatically creates a local SQLite database (`sensor_data.db`) that will be used when:
-- MongoDB connection fails
-- WiFi is unavailable
-- Network issues occur
-
-The system will automatically switch back to MongoDB when the connection is restored.
-
-## 📊 API Endpoints
-
-- `GET /` - Dashboard (requires authentication)
-- `GET /login` - Login page
-- `GET /logout` - Logout
-- `GET /api/current` - Current sensor reading
-- `GET /api/latest` - Recent readings (last 10)
-- `GET /api/history` - Historical data (last 24 hours)
-- `GET /api/status` - Database status
-
-## 🔌 Real-time Updates
-
-The dashboard uses WebSocket connections for real-time updates:
-- Sensor data updates every 10 seconds
-- Automatic reconnection on connection loss
-- Live status indicators
-
-## 📱 Mobile Responsive
-
-The dashboard is fully responsive and works great on:
-- 📱 Mobile phones
-- 📱 Tablets
-- 💻 Desktop computers
-
-## 🛠️ Customization
-
-### Adding New Sensors
-
-To add new sensors, modify the `SensorService.simulate_realistic_data()` method in `app.py`:
-
+### GPIO Pin Configuration
 ```python
-def simulate_realistic_data(self):
-    # Add your sensor reading logic here
-    self.current_data = {
-        'temperature': temperature_value,
-        'humidity': humidity_value,
-        'co2': co2_value,
-        'your_new_sensor': new_sensor_value,  # Add this
-        'timestamp': datetime.utcnow().isoformat(),
-        'device_id': DEVICE_ID
-    }
-```
-
-### Changing Update Intervals
-
-Modify the `SENSOR_READ_INTERVAL` constant in `app.py`:
-
-```python
-SENSOR_READ_INTERVAL = 10  # seconds
-```
-
-## 🔒 Security
-
-- Password-protected dashboard access
-- Session-based authentication
-- CORS protection
-- Input validation
-
-## 📈 Database Schema
-
-### MongoDB Collection: `readings`
-```json
-{
-  "_id": "ObjectId",
-  "device_id": "raspberry-pi-01",
-  "temperature": 24.5,
-  "humidity": 65.3,
-  "co2": 850,
-  "timestamp": "2025-01-13T10:00:00.000Z",
-  "server_timestamp": "2025-01-13T10:00:01.123Z"
+GPIO_CONFIG = {
+    # Sensors
+    'DHT22_PIN': 4,              # Temperature & Humidity
+    'LIGHT_SENSOR_PIN': 0,       # ADC Channel 0
+    'CO2_SENSOR_PIN': 1,         # ADC Channel 1
+    
+    # Controls
+    'FOGGER_PIN': 18,            # Fogger relay
+    'FAN_PIN': 19,               # Fan control
+    'LED_LIGHTS_PIN': 21,        # Grow lights
+    
+    # Status LEDs
+    'STATUS_LED_GREEN': 26,      # System OK
+    'STATUS_LED_RED': 16,        # Error
+    'STATUS_LED_BLUE': 13,       # WiFi Connected
 }
 ```
 
-### SQLite Table: `readings`
-```sql
-CREATE TABLE readings (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    device_id TEXT,
-    temperature REAL,
-    humidity REAL,
-    co2 INTEGER,
-    timestamp TEXT,
-    server_timestamp TEXT
-);
-```
+## Installation
 
-## 🐛 Troubleshooting
-
-### MongoDB Connection Issues
-- Check your connection string in `.env`
-- Verify network connectivity
-- Check MongoDB Atlas IP whitelist
-- The system will automatically fall back to SQLite
-
-### Port Already in Use
+### 1. System Prerequisites
 ```bash
-# Kill process using port 5000
-sudo lsof -t -i tcp:5000 | xargs kill -9
+# Update Raspberry Pi OS
+sudo apt update && sudo apt upgrade -y
+
+# Install Python dependencies
+sudo apt install python3-pip python3-venv git -y
+
+# Install system libraries for GPIO
+sudo apt install python3-dev python3-gpiozero -y
 ```
 
-### Permission Issues
+### 2. Clone Repository
 ```bash
-# Make sure you have write permissions for SQLite
-chmod 755 .
+git clone <your-repo-url>
+cd mushroom-control-system
 ```
 
-## 🤝 Contributing
+### 3. Python Environment
+```bash
+# Create virtual environment
+python3 -m venv venv
+source venv/bin/activate
+
+# Install Python packages
+pip install -r requirements.txt
+```
+
+### 4. Configuration
+```bash
+# Copy environment template
+cp .env.example .env
+
+# Edit configuration
+nano .env
+```
+
+Update `.env` with your MongoDB Atlas connection string and other settings.
+
+### 5. Hardware Connections
+Connect sensors and control devices according to the GPIO configuration in `config.py`.
+
+## Usage
+
+### Starting the System
+```bash
+# Activate virtual environment
+source venv/bin/activate
+
+# Run the application
+python app.py
+```
+
+The system will:
+1. Initialize GPIO pins and sensors
+2. Connect to databases (MongoDB → SQLite fallback)
+3. Start the web server on port 5000
+4. Automatically open browser to `http://localhost:5000`
+
+### Web Interface
+- **Login**: Default password is `admin123` (change in .env)
+- **Dashboard**: Real-time sensor readings and controls
+- **Controls**: Manual override for fogger, fan, and lights
+- **Phase Management**: Set current mushroom growth phase
+- **Historical Data**: Charts and tables of past readings
+
+### Remote Access
+To access from other devices on your network:
+```bash
+# Find your Pi's IP address
+hostname -I
+
+# Access via browser at: http://YOUR_PI_IP:5000
+```
+
+## Mushroom Growth Phases
+
+### 1. Inoculation (14 days)
+- Temperature: 20-22°C
+- Humidity: 60-70%
+- Light: Not needed
+- Focus: Sterile conditions
+
+### 2. Colonization (21 days)
+- Temperature: 22-24°C
+- Humidity: 70-80%
+- Light: Not needed
+- Focus: Mycelium growth
+
+### 3. Pin Formation (7 days)
+- Temperature: 18-20°C
+- Humidity: 85-95%
+- Light: Required (12 hours/day)
+- Focus: Trigger fruiting
+
+### 4. Fruiting (14 days)
+- Temperature: 18-22°C
+- Humidity: 80-90%
+- Light: Required (12 hours/day)
+- Focus: Mushroom development
+
+## Automatic Controls
+
+The system automatically manages:
+
+### Humidity Control
+- **Fogger**: Activates when humidity drops below optimal range
+- **Fan**: Activates when humidity exceeds optimal range
+- **Duration**: Configurable misting cycles
+
+### Light Management
+- **Schedule**: 6 AM - 6 PM during light-required phases
+- **Intensity**: Full spectrum LED grow lights
+- **Phase-based**: Only active during pinning and fruiting
+
+### Temperature Regulation
+- **Monitoring**: Continuous temperature tracking
+- **Alerts**: Visual warnings for out-of-range conditions
+- **Future**: Heating element control (configurable)
+
+## Database Configuration
+
+### MongoDB Atlas (Primary)
+- Cloud-based storage
+- Automatic scaling
+- Global accessibility
+- Requires internet connection
+
+### SQLite (Fallback)
+- Local storage in `sensor_data.db`
+- No internet required
+- Automatic failover
+- Data sync when reconnected
+
+## API Endpoints
+
+### Sensor Data
+- `GET /api/current` - Current sensor readings
+- `GET /api/latest` - Recent readings (last 10)
+- `GET /api/history` - Historical data
+- `GET /api/status` - System status
+
+### Controls
+- `POST /api/control/fogger` - Control fogger
+- `POST /api/control/fan` - Control fan speed
+- `POST /api/control/lights` - Control grow lights
+- `POST /api/phase` - Set mushroom growth phase
+
+## Troubleshooting
+
+### GPIO Issues
+```bash
+# Check GPIO permissions
+sudo usermod -a -G gpio $USER
+
+# Restart after group change
+sudo reboot
+```
+
+### Sensor Readings
+- Verify wiring connections
+- Check sensor power (3.3V/5V)
+- Review GPIO pin assignments
+- Monitor system logs
+
+### Database Connection
+- Verify MongoDB URI in .env
+- Check internet connectivity
+- SQLite fallback should work offline
+- Monitor connection status in dashboard
+
+### Web Access
+- Ensure port 5000 is open
+- Check firewall settings
+- Verify Pi's IP address
+- Try localhost:5000 directly on Pi
+
+## Development
+
+### Running in Simulation Mode
+If GPIO libraries aren't available, the system runs in simulation mode with realistic sensor data.
+
+### Custom Sensors
+Extend the `SensorService` class in `app.py` to add new sensors.
+
+### Custom Controls
+Add new control functions in `GPIOControlService` class.
+
+## Safety Considerations
+
+- **Electrical Safety**: Use proper relays for high-voltage devices
+- **Moisture Protection**: Protect electronics from humidity
+- **Ventilation**: Ensure adequate air circulation
+- **Fire Safety**: Monitor heating elements and electrical connections
+- **Food Safety**: Use food-grade materials for growing containers
+
+## License
+
+MIT License - see LICENSE file for details.
+
+## Contributing
 
 1. Fork the repository
 2. Create a feature branch
@@ -180,18 +278,9 @@ chmod 755 .
 4. Test thoroughly
 5. Submit a pull request
 
-## 📄 License
+## Support
 
-This project is open source and available under the MIT License.
-
-## 🆘 Support
-
-If you encounter any issues:
-1. Check the console output for error messages
-2. Verify your `.env` configuration
-3. Check network connectivity
-4. Review the troubleshooting section above
-
----
-
-**Happy Monitoring!** 🎉
+For issues, questions, or contributions:
+- Create an issue on GitHub
+- Check the troubleshooting section
+- Review system logs for error details
