@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>IoT Dashboard - Raspberry Pi Monitoring</title>
+    <title>Mushroom Environmental Control - Dashboard</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.4/socket.io.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
@@ -124,6 +124,79 @@
         .temperature .sensor-value { color: #e74c3c; }
         .humidity .sensor-value { color: #3498db; }
         .co2 .sensor-value { color: #f39c12; }
+        .light .sensor-value { color: #9b59b6; }
+
+        .mushroom-status {
+            background: rgba(255, 255, 255, 0.95);
+            padding: 2rem;
+            border-radius: 15px;
+            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.1);
+            margin-bottom: 2rem;
+            text-align: center;
+        }
+
+        .status-optimal { border-left: 5px solid #27ae60; }
+        .status-good { border-left: 5px solid #f1c40f; }
+        .status-warning { border-left: 5px solid #f39c12; }
+        .status-critical { border-left: 5px solid #e74c3c; }
+
+        .controls-section {
+            background: rgba(255, 255, 255, 0.95);
+            padding: 2rem;
+            border-radius: 15px;
+            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.1);
+            margin-bottom: 2rem;
+        }
+
+        .control-buttons {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 1rem;
+            margin-top: 1rem;
+        }
+
+        .control-btn {
+            padding: 1rem;
+            border: none;
+            border-radius: 8px;
+            font-size: 1rem;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.5rem;
+        }
+
+        .control-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.2);
+        }
+
+        .control-btn.active {
+            background: #27ae60;
+            color: white;
+        }
+
+        .control-btn.inactive {
+            background: #95a5a6;
+            color: white;
+        }
+
+        .fogger-btn { background: #3498db; color: white; }
+        .fan-btn { background: #e67e22; color: white; }
+        .lights-btn { background: #f1c40f; color: #333; }
+
+        .phase-selector {
+            margin: 1rem 0;
+        }
+
+        .phase-selector select {
+            padding: 0.5rem;
+            border-radius: 5px;
+            border: 1px solid #ddd;
+            font-size: 1rem;
+        }
 
         .chart-container {
             background: rgba(255, 255, 255, 0.95);
@@ -199,7 +272,7 @@
 </head>
 <body>
     <div class="header">
-        <h1>🏠 IoT Dashboard</h1>
+        <h1>🍄 Mushroom Control Dashboard</h1>
         <div class="header-controls">
             <div id="status-indicator" class="status-indicator status-offline">
                 <span id="status-dot">🔴</span>
@@ -207,6 +280,9 @@
             </div>
             <div id="db-status" class="status-indicator">
                 <span>📊 Database: <span id="db-type">Loading...</span></span>
+            </div>
+            <div id="phase-status" class="status-indicator">
+                <span>🍄 Phase: <span id="current-phase">Loading...</span></span>
             </div>
             <a href="/logout" class="logout-btn">🚪 Logout</a>
         </div>
@@ -235,12 +311,51 @@
                 <div class="sensor-value" id="co2-value">--</div>
                 <div class="sensor-unit">ppm</div>
             </div>
+
+            <div class="sensor-card light">
+                <div class="sensor-icon">💡</div>
+                <div class="sensor-title">Light Intensity</div>
+                <div class="sensor-value" id="light-value">--</div>
+                <div class="sensor-unit">lux</div>
+            </div>
         </div>
 
         <!-- Chart -->
         <div class="chart-container">
             <h2 class="chart-title">📈 Historical Data (Last 24 Hours)</h2>
             <canvas id="sensorChart" width="400" height="200"></canvas>
+        </div>
+
+        <!-- Mushroom Status -->
+        <div class="mushroom-status" id="mushroom-status">
+            <h2>🍄 Mushroom Status: <span id="status-text">Loading...</span></h2>
+            <p>Growth Phase: <span id="growth-phase">--</span></p>
+            <div class="phase-selector">
+                <label>Change Growth Phase: </label>
+                <select id="phase-select">
+                    <option value="inoculation">Inoculation</option>
+                    <option value="colonization">Colonization</option>
+                    <option value="pinning">Pin Formation</option>
+                    <option value="fruiting">Fruiting</option>
+                </select>
+                <button onclick="changePhase()" class="control-btn">Update Phase</button>
+            </div>
+        </div>
+
+        <!-- Environmental Controls -->
+        <div class="controls-section">
+            <h2 class="chart-title">🎛️ Environmental Controls</h2>
+            <div class="control-buttons">
+                <button id="fogger-btn" class="control-btn fogger-btn" onclick="toggleFogger()">
+                    <span>🌫️</span> <span id="fogger-text">Fogger OFF</span>
+                </button>
+                <button id="fan-btn" class="control-btn fan-btn" onclick="toggleFan()">
+                    <span>🌬️</span> <span id="fan-text">Fan OFF</span>
+                </button>
+                <button id="lights-btn" class="control-btn lights-btn" onclick="toggleLights()">
+                    <span>💡</span> <span id="lights-text">Lights OFF</span>
+                </button>
+            </div>
         </div>
 
         <!-- Recent Readings Table -->
@@ -253,12 +368,14 @@
                         <th>Temperature (°C)</th>
                         <th>Humidity (%)</th>
                         <th>CO2 (ppm)</th>
-                        <th>Source</th>
+                        <th>Light</th>
+                        <th>Status</th>
+                        <th>Phase</th>
                     </tr>
                 </thead>
                 <tbody id="readings-table">
                     <tr>
-                        <td colspan="5" class="loading">Loading recent readings...</td>
+                        <td colspan="7" class="loading">Loading recent readings...</td>
                     </tr>
                 </tbody>
             </table>
@@ -274,6 +391,11 @@
         const socket = io();
         let chart;
         let historicalData = [];
+        let currentControls = {
+            fogger_active: false,
+            fan_speed: 0,
+            lights_active: false
+        };
 
         // Initialize Chart
         function initChart() {
@@ -306,6 +428,14 @@
                             backgroundColor: 'rgba(243, 156, 18, 0.1)',
                             tension: 0.4,
                             yAxisID: 'y2'
+                        },
+                        {
+                            label: 'Light Intensity',
+                            data: [],
+                            borderColor: '#9b59b6',
+                            backgroundColor: 'rgba(155, 89, 182, 0.1)',
+                            tension: 0.4,
+                            yAxisID: 'y3'
                         }
                     ]
                 },
@@ -348,6 +478,11 @@
                             type: 'linear',
                             display: false,
                             position: 'right',
+                        },
+                        y3: {
+                            type: 'linear',
+                            display: false,
+                            position: 'right',
                         }
                     }
                 }
@@ -359,7 +494,64 @@
             document.getElementById('temp-value').textContent = data.temperature || '--';
             document.getElementById('humidity-value').textContent = data.humidity || '--';
             document.getElementById('co2-value').textContent = data.co2 || '--';
+            document.getElementById('light-value').textContent = data.light_intensity || '--';
             document.getElementById('last-updated').textContent = new Date().toLocaleString();
+            
+            // Update mushroom status
+            if (data.mushroom_status) {
+                const statusElement = document.getElementById('mushroom-status');
+                const statusText = document.getElementById('status-text');
+                const phaseText = document.getElementById('growth-phase');
+                
+                statusText.textContent = data.mushroom_status.toUpperCase();
+                phaseText.textContent = data.mushroom_phase || '--';
+                
+                // Update status styling
+                statusElement.className = 'mushroom-status status-' + data.mushroom_status;
+            }
+            
+            // Update controls if provided
+            if (data.controls) {
+                updateControlsDisplay(data.controls);
+            }
+        }
+        
+        // Update controls display
+        function updateControlsDisplay(controls) {
+            currentControls = controls;
+            
+            // Update fogger button
+            const foggerBtn = document.getElementById('fogger-btn');
+            const foggerText = document.getElementById('fogger-text');
+            if (controls.fogger_active) {
+                foggerBtn.className = 'control-btn fogger-btn active';
+                foggerText.textContent = 'Fogger ON';
+            } else {
+                foggerBtn.className = 'control-btn fogger-btn inactive';
+                foggerText.textContent = 'Fogger OFF';
+            }
+            
+            // Update fan button
+            const fanBtn = document.getElementById('fan-btn');
+            const fanText = document.getElementById('fan-text');
+            if (controls.fan_speed > 0) {
+                fanBtn.className = 'control-btn fan-btn active';
+                fanText.textContent = `Fan ${controls.fan_speed}%`;
+            } else {
+                fanBtn.className = 'control-btn fan-btn inactive';
+                fanText.textContent = 'Fan OFF';
+            }
+            
+            // Update lights button
+            const lightsBtn = document.getElementById('lights-btn');
+            const lightsText = document.getElementById('lights-text');
+            if (controls.lights_active) {
+                lightsBtn.className = 'control-btn lights-btn active';
+                lightsText.textContent = 'Lights ON';
+            } else {
+                lightsBtn.className = 'control-btn lights-btn inactive';
+                lightsText.textContent = 'Lights OFF';
+            }
         }
 
         // Update chart with new data
@@ -371,6 +563,7 @@
             chart.data.datasets[0].data.push(data.temperature);
             chart.data.datasets[1].data.push(data.humidity);
             chart.data.datasets[2].data.push(data.co2);
+            chart.data.datasets[3].data.push(data.light_intensity || 0);
             
             // Keep only last 20 points for real-time view
             if (chart.data.labels.length > 20) {
@@ -378,6 +571,7 @@
                 chart.data.datasets[0].data.shift();
                 chart.data.datasets[1].data.shift();
                 chart.data.datasets[2].data.shift();
+                chart.data.datasets[3].data.shift();
             }
             
             chart.update('none');
@@ -396,11 +590,13 @@
                     const temps = data.slice(-20).map(reading => reading.temperature);
                     const humidity = data.slice(-20).map(reading => reading.humidity);
                     const co2 = data.slice(-20).map(reading => reading.co2 || 400);
+                    const light = data.slice(-20).map(reading => reading.light_intensity || 0);
                     
                     chart.data.labels = labels;
                     chart.data.datasets[0].data = temps;
                     chart.data.datasets[1].data = humidity;
                     chart.data.datasets[2].data = co2;
+                    chart.data.datasets[3].data = light;
                     chart.update();
                 })
                 .catch(error => console.error('Error loading historical data:', error));
@@ -415,7 +611,7 @@
                     tbody.innerHTML = '';
                     
                     if (data.length === 0) {
-                        tbody.innerHTML = '<tr><td colspan="5" class="loading">No recent readings available</td></tr>';
+                        tbody.innerHTML = '<tr><td colspan="7" class="loading">No recent readings available</td></tr>';
                         return;
                     }
                     
@@ -429,7 +625,9 @@
                             <td>${reading.temperature}°C</td>
                             <td>${reading.humidity}%</td>
                             <td>${reading.co2 || 'N/A'} ppm</td>
-                            <td>${source}</td>
+                            <td>${reading.light_intensity || 'N/A'}</td>
+                            <td>${reading.mushroom_status || 'Unknown'}</td>
+                            <td>${reading.mushroom_phase || 'Unknown'}</td>
                         `;
                         tbody.appendChild(row);
                     });
@@ -437,7 +635,7 @@
                 .catch(error => {
                     console.error('Error loading recent readings:', error);
                     document.getElementById('readings-table').innerHTML = 
-                        '<tr><td colspan="5" class="loading">Error loading readings</td></tr>';
+                        '<tr><td colspan="7" class="loading">Error loading readings</td></tr>';
                 });
         }
 
@@ -464,6 +662,10 @@
 
         socket.on('status_update', function(data) {
             document.getElementById('db-type').textContent = data.database;
+            if (data.mushroom_phase) {
+                document.getElementById('current-phase').textContent = data.mushroom_phase;
+                document.getElementById('phase-select').value = data.mushroom_phase;
+            }
         });
 
         // Load database status
@@ -472,8 +674,83 @@
                 .then(response => response.json())
                 .then(data => {
                     document.getElementById('db-type').textContent = data.database;
+                    if (data.mushroom_phase) {
+                        document.getElementById('current-phase').textContent = data.mushroom_phase;
+                        document.getElementById('phase-select').value = data.mushroom_phase;
+                    }
+                    if (data.controls) {
+                        updateControlsDisplay(data.controls);
+                    }
                 })
                 .catch(error => console.error('Error loading status:', error));
+        }
+        
+        // Control functions
+        function toggleFogger() {
+            const activate = !currentControls.fogger_active;
+            fetch('/api/control/fogger', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({activate: activate})
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    console.log(data.message);
+                }
+            })
+            .catch(error => console.error('Error controlling fogger:', error));
+        }
+        
+        function toggleFan() {
+            const newSpeed = currentControls.fan_speed > 0 ? 0 : 75;
+            fetch('/api/control/fan', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({speed: newSpeed})
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    console.log(data.message);
+                }
+            })
+            .catch(error => console.error('Error controlling fan:', error));
+        }
+        
+        function toggleLights() {
+            const activate = !currentControls.lights_active;
+            fetch('/api/control/lights', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({activate: activate})
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    console.log(data.message);
+                }
+            })
+            .catch(error => console.error('Error controlling lights:', error));
+        }
+        
+        function changePhase() {
+            const newPhase = document.getElementById('phase-select').value;
+            fetch('/api/phase', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({phase: newPhase})
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    console.log(data.message);
+                    document.getElementById('current-phase').textContent = newPhase;
+                } else {
+                    alert('Error changing phase: ' + data.message);
+                }
+            })
+            .catch(error => console.error('Error changing phase:', error));
         }
 
         // Initialize dashboard
@@ -488,6 +765,9 @@
                 loadRecentReadings();
                 loadDatabaseStatus();
             }, 30000);
+            
+            // Set default phase in selector
+            document.getElementById('phase-select').value = 'pinning';
         });
     </script>
 </body>
