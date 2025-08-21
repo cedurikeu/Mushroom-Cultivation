@@ -35,7 +35,7 @@ from config import GPIO_CONFIG, MUSHROOM_CONFIG, GROWTH_PHASES, SENSOR_CONFIG
 load_dotenv()
 
 # Constants
-DEVICE_ID = "mushroom-control-01"
+DEVICE_ID = "raspberry-pi-01"
 SENSOR_READ_INTERVAL = SENSOR_CONFIG['read_interval']
 ALERT_THRESHOLDS = MUSHROOM_CONFIG['alert_thresholds']
 OPTIMAL_RANGES = MUSHROOM_CONFIG['optimal_ranges']
@@ -47,9 +47,9 @@ CURRENT_PHASE = 'pinning'  # Default phase
 app = Flask(__name__)
 CORS(app)
 app.config.update({
-    'SECRET_KEY': os.getenv('SECRET_KEY', 'your-secret-key-here'),
+    'SECRET_KEY': os.getenv('SECRET_KEY', 'pentaplets'),
     'MONGO_URI': os.getenv('MONGODB_URI'),
-    'DASHBOARD_PASSWORD': os.getenv('DASHBOARD_PASSWORD', 'admin123')  # Change this!
+    'DASHBOARD_PASSWORD': os.getenv('DASHBOARD_PASSWORD', 'pentaplets')  # Change this!
 })
 
 # Initialize SocketIO
