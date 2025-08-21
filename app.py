@@ -17,12 +17,13 @@ import math
 # Import GPIO and sensor libraries
 try:
     import RPi.GPIO as GPIO
-    import adafruit_dht
+    import adafruit_scd4x
     import board
     import digitalio
     import busio
     import adafruit_mcp3xxx.mcp3008 as MCP
     from adafruit_mcp3xxx.analog_in import AnalogIn
+    import time
     GPIO_AVAILABLE = True
 except ImportError:
     print("⚠️ GPIO libraries not available - running in simulation mode")
@@ -118,6 +119,7 @@ class DatabaseService:
                     humidity REAL,
                     co2 INTEGER,
                     light_intensity INTEGER,
+                    water_level REAL,
                     mushroom_phase TEXT,
                     mushroom_status TEXT,
                     timestamp TEXT,
@@ -154,14 +156,15 @@ class DatabaseService:
             try:
                 cursor = self.sqlite_conn.cursor()
                 cursor.execute('''
-                    INSERT INTO readings (device_id, temperature, humidity, co2, light_intensity, mushroom_phase, mushroom_status, timestamp, server_timestamp)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO readings (device_id, temperature, humidity, co2, light_intensity, water_level, mushroom_phase, mushroom_status, timestamp, server_timestamp)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     data['device_id'],
                     data['temperature'],
                     data['humidity'],
                     data.get('co2', 400),
                     data.get('light_intensity', 0),
+                    data.get('water_level', 50.0),
                     data.get('mushroom_phase', 'fruiting'),
                     data.get('mushroom_status', 'unknown'),
                     data['timestamp'],
@@ -384,6 +387,7 @@ class SensorService:
             'humidity': 0,
             'co2': 400,
             'light_intensity': 0,
+            'water_level': 50.0,
             'timestamp': datetime.utcnow().isoformat(),
             'device_id': DEVICE_ID,
             'mushroom_phase': CURRENT_PHASE,
@@ -396,10 +400,12 @@ class SensorService:
     def setup_sensors(self):
         """Initialize sensors"""
         try:
-            # DHT22 temperature/humidity sensor
-            self.dht = adafruit_dht.DHT22(getattr(board, f'D{GPIO_CONFIG["DHT22_PIN"]}'))
+            # I2C setup for SCD41 sensor
+            i2c = busio.I2C(board.SCL, board.SDA)
+            self.scd41 = adafruit_scd4x.SCD4X(i2c)
+            self.scd41.start_periodic_measurement()
             
-            # SPI setup for MCP3008 ADC
+            # SPI setup for MCP3008 ADC (for light sensor)
             spi = busio.SPI(clock=getattr(board, f'D{GPIO_CONFIG["SPI_CLK"]}'),
                           MISO=getattr(board, f'D{GPIO_CONFIG["SPI_MISO"]}'),
                           MOSI=getattr(board, f'D{GPIO_CONFIG["SPI_MOSI"]}'))
@@ -407,27 +413,94 @@ class SensorService:
             
             self.mcp = MCP.MCP3008(spi, cs)
             self.light_sensor = AnalogIn(self.mcp, MCP.P0)  # Channel 0 for light
-            self.co2_sensor = AnalogIn(self.mcp, MCP.P1)    # Channel 1 for CO2
+            
+            # Setup ultrasonic sensor pins
+            GPIO.setup(GPIO_CONFIG['ULTRASONIC_TRIG_PIN'], GPIO.OUT)
+            GPIO.setup(GPIO_CONFIG['ULTRASONIC_ECHO_PIN'], GPIO.IN)
             
             print("✅ Sensors initialized successfully")
+            print("  - SCD41 (Temperature, Humidity, CO2)")
+            print("  - Light sensor via MCP3008")
+            print("  - Ultrasonic water level sensor")
         except Exception as e:
             print(f"❌ Sensor setup error: {e}")
-            self.dht = None
+            self.scd41 = None
             self.mcp = None
+    
+    def read_ultrasonic_distance(self):
+        """Read distance from ultrasonic sensor in cm"""
+        try:
+            # Send trigger pulse
+            GPIO.output(GPIO_CONFIG['ULTRASONIC_TRIG_PIN'], GPIO.HIGH)
+            time.sleep(0.00001)  # 10 microseconds
+            GPIO.output(GPIO_CONFIG['ULTRASONIC_TRIG_PIN'], GPIO.LOW)
+            
+            # Wait for echo
+            pulse_start = time.time()
+            pulse_end = time.time()
+            
+            # Wait for echo to go HIGH
+            timeout = time.time() + 0.1  # 100ms timeout
+            while GPIO.input(GPIO_CONFIG['ULTRASONIC_ECHO_PIN']) == 0:
+                pulse_start = time.time()
+                if time.time() > timeout:
+                    return None
+            
+            # Wait for echo to go LOW
+            timeout = time.time() + 0.1  # 100ms timeout
+            while GPIO.input(GPIO_CONFIG['ULTRASONIC_ECHO_PIN']) == 1:
+                pulse_end = time.time()
+                if time.time() > timeout:
+                    return None
+            
+            # Calculate distance
+            pulse_duration = pulse_end - pulse_start
+            distance = pulse_duration * 17150  # Speed of sound = 34300 cm/s, divide by 2
+            
+            return round(distance, 2)
+        except Exception as e:
+            print(f"❌ Ultrasonic sensor error: {e}")
+            return None
+    
+    def calculate_water_level_percentage(self, distance_cm):
+        """Convert ultrasonic distance to water level percentage"""
+        if distance_cm is None:
+            return 50.0  # Default value if sensor fails
+        
+        reservoir_config = SENSOR_CONFIG['reservoir_config']
+        sensor_height = reservoir_config['sensor_height_cm']
+        max_depth = reservoir_config['max_depth_cm']
+        min_depth = reservoir_config['min_depth_cm']
+        
+        # Calculate water depth
+        water_depth = sensor_height - distance_cm
+        
+        # Clamp to valid range
+        water_depth = max(0, min(max_depth, water_depth))
+        
+        # Convert to percentage (0% = empty, 100% = full)
+        if water_depth <= min_depth:
+            return 0.0
+        else:
+            percentage = ((water_depth - min_depth) / (max_depth - min_depth)) * 100
+            return round(percentage, 1)
     
     def read_real_sensors(self):
         """Read data from actual GPIO sensors"""
         data = self.current_data.copy()
         
         try:
-            # Read DHT22 (temperature & humidity)
-            if hasattr(self, 'dht') and self.dht:
-                temp = self.dht.temperature
-                humidity = self.dht.humidity
-                
-                if temp is not None and humidity is not None:
-                    data['temperature'] = round(temp + SENSOR_CONFIG['calibration_offsets']['temperature'], 1)
-                    data['humidity'] = round(humidity + SENSOR_CONFIG['calibration_offsets']['humidity'], 1)
+            # Read SCD41 (temperature, humidity, CO2)
+            if hasattr(self, 'scd41') and self.scd41:
+                if self.scd41.data_ready:
+                    temp = self.scd41.temperature
+                    humidity = self.scd41.relative_humidity
+                    co2 = self.scd41.CO2
+                    
+                    if temp is not None and humidity is not None and co2 is not None:
+                        data['temperature'] = round(temp + SENSOR_CONFIG['calibration_offsets']['temperature'], 1)
+                        data['humidity'] = round(humidity + SENSOR_CONFIG['calibration_offsets']['humidity'], 1)
+                        data['co2'] = int(co2 + SENSOR_CONFIG['calibration_offsets']['co2'])
             
             # Read light sensor (photoresistor via ADC)
             if hasattr(self, 'light_sensor') and self.light_sensor:
@@ -436,12 +509,10 @@ class SensorService:
                 light_intensity = int((light_voltage / 3.3) * 1000)
                 data['light_intensity'] = light_intensity + SENSOR_CONFIG['calibration_offsets']['light_intensity']
             
-            # Read CO2 sensor (MQ-135 or similar via ADC)
-            if hasattr(self, 'co2_sensor') and self.co2_sensor:
-                co2_voltage = self.co2_sensor.voltage
-                # Convert voltage to CO2 ppm (simplified conversion)
-                co2_ppm = int(400 + (co2_voltage / 3.3) * 1000)
-                data['co2'] = co2_ppm + SENSOR_CONFIG['calibration_offsets']['co2']
+            # Read water level via ultrasonic sensor
+            distance = self.read_ultrasonic_distance()
+            water_level = self.calculate_water_level_percentage(distance)
+            data['water_level'] = water_level + SENSOR_CONFIG['calibration_offsets']['water_level']
             
         except Exception as e:
             print(f"❌ Sensor reading error: {e}")
@@ -482,14 +553,26 @@ class SensorService:
             light_variation = random.uniform(-20, 20)
         light_intensity = max(0, light_base + light_variation)
         
+        # Water level simulation (decreases over time when fogger is active)
+        water_level_base = 75  # Start with 75% water level
+        # Simulate water consumption (decreases when fogger is active)
+        if hasattr(gpio_control, 'fogger_active') and gpio_control.fogger_active:
+            water_consumption = random.uniform(0.5, 1.5)  # Faster consumption when fogger active
+        else:
+            water_consumption = random.uniform(0.1, 0.3)  # Slow evaporation
+        
+        # Add some randomness but keep it realistic
+        water_level = max(10, min(100, water_level_base + random.uniform(-10, 5) - (self.simulation_time / 3600) * water_consumption))
+        
         # Determine mushroom status based on conditions
-        mushroom_status = self.determine_mushroom_status(temperature, humidity, co2, light_intensity)
+        mushroom_status = self.determine_mushroom_status(temperature, humidity, co2, light_intensity, water_level)
         
         self.current_data = {
             'temperature': round(temperature, 1),
             'humidity': round(humidity, 1),
             'co2': int(co2),
             'light_intensity': int(light_intensity),
+            'water_level': round(water_level, 1),
             'timestamp': datetime.utcnow().isoformat(),
             'device_id': DEVICE_ID,
             'mushroom_phase': CURRENT_PHASE,
@@ -498,7 +581,7 @@ class SensorService:
         
         return self.current_data
     
-    def determine_mushroom_status(self, temp, humidity, co2, light):
+    def determine_mushroom_status(self, temp, humidity, co2, light, water_level):
         """Determine mushroom health status based on environmental conditions"""
         phase_config = GROWTH_PHASES.get(CURRENT_PHASE, GROWTH_PHASES['fruiting'])
         
@@ -516,8 +599,13 @@ class SensorService:
             issues.append('co2')
         if phase_config['light_needed'] and light < 200:
             issues.append('light')
+        if water_level < 20:
+            issues.append('water_level')
         
-        if not issues:
+        # Prioritize critical water level
+        if water_level < 10:
+            return 'critical'
+        elif not issues:
             return 'optimal'
         elif len(issues) == 1:
             return 'good'
@@ -698,7 +786,7 @@ def sensor_monitor():
             # Log current values
             status_emoji = {'optimal': '🟢', 'good': '🟡', 'warning': '🟠', 'critical': '🔴'}
             emoji = status_emoji.get(sensor_data['mushroom_status'], '⚪')
-            print(f"📊 {emoji} T: {sensor_data['temperature']}°C, H: {sensor_data['humidity']}%, CO2: {sensor_data['co2']}ppm, Light: {sensor_data['light_intensity']}, Status: {sensor_data['mushroom_status']}")
+            print(f"📊 {emoji} T: {sensor_data['temperature']}°C, H: {sensor_data['humidity']}%, CO2: {sensor_data['co2']}ppm, Light: {sensor_data['light_intensity']}, Water: {sensor_data['water_level']}%, Status: {sensor_data['mushroom_status']}")
             
             time.sleep(SENSOR_READ_INTERVAL)
             
@@ -712,10 +800,17 @@ def auto_control_environment(sensor_data):
         phase_config = GROWTH_PHASES.get(CURRENT_PHASE, GROWTH_PHASES['fruiting'])
         temp = sensor_data['temperature']
         humidity = sensor_data['humidity']
+        water_level = sensor_data.get('water_level', 50.0)
         
-        # Auto-fogger control based on humidity
+        # Check water level first - disable fogger if water is too low
+        if water_level < 15:
+            if gpio_control.fogger_active:
+                gpio_control.control_fogger(False)
+                print("🚨 Low water level detected - Fogger disabled!")
+        
+        # Auto-fogger control based on humidity (only if water level is sufficient)
         humidity_min, humidity_max = phase_config['humidity_range']
-        if humidity < humidity_min - 5 and not gpio_control.fogger_active:
+        if (humidity < humidity_min - 5 and not gpio_control.fogger_active and water_level > 20):
             gpio_control.control_fogger(True, MUSHROOM_CONFIG['control_settings']['fogger_duration'])
         
         # Auto-fan control based on humidity (too high)

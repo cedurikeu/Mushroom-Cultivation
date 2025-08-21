@@ -125,6 +125,7 @@
         .humidity .sensor-value { color: #3498db; }
         .co2 .sensor-value { color: #f39c12; }
         .light .sensor-value { color: #9b59b6; }
+        .water .sensor-value { color: #17a2b8; }
 
         .mushroom-status {
             background: rgba(255, 255, 255, 0.95);
@@ -318,6 +319,13 @@
                 <div class="sensor-value" id="light-value">--</div>
                 <div class="sensor-unit">lux</div>
             </div>
+
+            <div class="sensor-card water">
+                <div class="sensor-icon">💧</div>
+                <div class="sensor-title">Water Level</div>
+                <div class="sensor-value" id="water-value">--</div>
+                <div class="sensor-unit">%</div>
+            </div>
         </div>
 
         <!-- Chart -->
@@ -369,13 +377,14 @@
                         <th>Humidity (%)</th>
                         <th>CO2 (ppm)</th>
                         <th>Light</th>
+                        <th>Water (%)</th>
                         <th>Status</th>
                         <th>Phase</th>
                     </tr>
                 </thead>
                 <tbody id="readings-table">
                     <tr>
-                        <td colspan="7" class="loading">Loading recent readings...</td>
+                        <td colspan="8" class="loading">Loading recent readings...</td>
                     </tr>
                 </tbody>
             </table>
@@ -436,6 +445,14 @@
                             backgroundColor: 'rgba(155, 89, 182, 0.1)',
                             tension: 0.4,
                             yAxisID: 'y3'
+                        },
+                        {
+                            label: 'Water Level (%)',
+                            data: [],
+                            borderColor: '#17a2b8',
+                            backgroundColor: 'rgba(23, 162, 184, 0.1)',
+                            tension: 0.4,
+                            yAxisID: 'y4'
                         }
                     ]
                 },
@@ -483,6 +500,11 @@
                             type: 'linear',
                             display: false,
                             position: 'right',
+                        },
+                        y4: {
+                            type: 'linear',
+                            display: false,
+                            position: 'right',
                         }
                     }
                 }
@@ -495,7 +517,23 @@
             document.getElementById('humidity-value').textContent = data.humidity || '--';
             document.getElementById('co2-value').textContent = data.co2 || '--';
             document.getElementById('light-value').textContent = data.light_intensity || '--';
+            document.getElementById('water-value').textContent = data.water_level || '--';
             document.getElementById('last-updated').textContent = new Date().toLocaleString();
+            
+            // Update water level styling based on level
+            const waterCard = document.querySelector('.sensor-card.water');
+            const waterLevel = parseFloat(data.water_level) || 0;
+            
+            if (waterLevel < 15) {
+                waterCard.style.borderLeft = '5px solid #e74c3c';  // Red for critical
+                waterCard.style.backgroundColor = 'rgba(231, 76, 60, 0.1)';
+            } else if (waterLevel < 30) {
+                waterCard.style.borderLeft = '5px solid #f39c12';  // Orange for warning
+                waterCard.style.backgroundColor = 'rgba(243, 156, 18, 0.1)';
+            } else {
+                waterCard.style.borderLeft = '5px solid #27ae60';  // Green for good
+                waterCard.style.backgroundColor = 'rgba(255, 255, 255, 0.95)';
+            }
             
             // Update mushroom status
             if (data.mushroom_status) {
@@ -564,6 +602,7 @@
             chart.data.datasets[1].data.push(data.humidity);
             chart.data.datasets[2].data.push(data.co2);
             chart.data.datasets[3].data.push(data.light_intensity || 0);
+            chart.data.datasets[4].data.push(data.water_level || 50);
             
             // Keep only last 20 points for real-time view
             if (chart.data.labels.length > 20) {
@@ -572,6 +611,7 @@
                 chart.data.datasets[1].data.shift();
                 chart.data.datasets[2].data.shift();
                 chart.data.datasets[3].data.shift();
+                chart.data.datasets[4].data.shift();
             }
             
             chart.update('none');
@@ -591,12 +631,14 @@
                     const humidity = data.slice(-20).map(reading => reading.humidity);
                     const co2 = data.slice(-20).map(reading => reading.co2 || 400);
                     const light = data.slice(-20).map(reading => reading.light_intensity || 0);
+                    const water = data.slice(-20).map(reading => reading.water_level || 50);
                     
                     chart.data.labels = labels;
                     chart.data.datasets[0].data = temps;
                     chart.data.datasets[1].data = humidity;
                     chart.data.datasets[2].data = co2;
                     chart.data.datasets[3].data = light;
+                    chart.data.datasets[4].data = water;
                     chart.update();
                 })
                 .catch(error => console.error('Error loading historical data:', error));
@@ -611,7 +653,7 @@
                     tbody.innerHTML = '';
                     
                     if (data.length === 0) {
-                        tbody.innerHTML = '<tr><td colspan="7" class="loading">No recent readings available</td></tr>';
+                        tbody.innerHTML = '<tr><td colspan="8" class="loading">No recent readings available</td></tr>';
                         return;
                     }
                     
@@ -626,6 +668,7 @@
                             <td>${reading.humidity}%</td>
                             <td>${reading.co2 || 'N/A'} ppm</td>
                             <td>${reading.light_intensity || 'N/A'}</td>
+                            <td>${reading.water_level || 'N/A'}%</td>
                             <td>${reading.mushroom_status || 'Unknown'}</td>
                             <td>${reading.mushroom_phase || 'Unknown'}</td>
                         `;
@@ -635,7 +678,7 @@
                 .catch(error => {
                     console.error('Error loading recent readings:', error);
                     document.getElementById('readings-table').innerHTML = 
-                        '<tr><td colspan="7" class="loading">Error loading readings</td></tr>';
+                        '<tr><td colspan="8" class="loading">Error loading readings</td></tr>';
                 });
         }
 

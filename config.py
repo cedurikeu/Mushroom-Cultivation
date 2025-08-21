@@ -3,9 +3,11 @@
 # GPIO Pin Assignments
 GPIO_CONFIG = {
     # Sensor Pins
-    'DHT22_PIN': 4,              # Temperature & Humidity sensor (DHT22)
+    'SCD41_SDA_PIN': 2,          # SCD41 I2C SDA pin (GPIO 2)
+    'SCD41_SCL_PIN': 3,          # SCD41 I2C SCL pin (GPIO 3)
     'LIGHT_SENSOR_PIN': 0,       # Light intensity (MCP3008 ADC Channel 0)
-    'CO2_SENSOR_PIN': 1,         # CO2 sensor (MCP3008 ADC Channel 1)
+    'ULTRASONIC_TRIG_PIN': 23,   # Ultrasonic trigger pin for water level
+    'ULTRASONIC_ECHO_PIN': 24,   # Ultrasonic echo pin for water level
     
     # Control Pins
     'FOGGER_PIN': 18,            # Fogger relay control
@@ -31,13 +33,15 @@ MUSHROOM_CONFIG = {
         'temperature': {'min': 18, 'max': 24},      # Celsius
         'humidity': {'min': 80, 'max': 95},         # Percentage
         'co2': {'min': 800, 'max': 1200},           # PPM
-        'light_intensity': {'min': 200, 'max': 800} # Lux equivalent
+        'light_intensity': {'min': 200, 'max': 800}, # Lux equivalent
+        'water_level': {'min': 20, 'max': 100}     # Percentage of reservoir
     },
     'alert_thresholds': {
         'temperature': {'critical_low': 15, 'critical_high': 28},
         'humidity': {'critical_low': 70, 'critical_high': 98},
         'co2': {'critical_low': 600, 'critical_high': 1500},
-        'light_intensity': {'critical_low': 100, 'critical_high': 1000}
+        'light_intensity': {'critical_low': 100, 'critical_high': 1000},
+        'water_level': {'critical_low': 15, 'critical_high': 100}  # Low water alert at 15%
     },
     'control_settings': {
         'fogger_duration': 30,      # seconds
@@ -108,6 +112,13 @@ SENSOR_CONFIG = {
         'temperature': 0.0,
         'humidity': 0.0,
         'co2': 0,
-        'light_intensity': 0
+        'light_intensity': 0,
+        'water_level': 0.0
+    },
+    # Water reservoir configuration
+    'reservoir_config': {
+        'max_depth_cm': 30,          # Maximum depth of reservoir in cm
+        'min_depth_cm': 5,           # Minimum usable depth in cm
+        'sensor_height_cm': 35       # Height of ultrasonic sensor above bottom
     }
 }
