@@ -16,17 +16,18 @@ import math
 
 # Import GPIO and sensor libraries
 try:
-    import RPi.GPIO as GPIO
+    from gpiozero import DistanceSensor, LED, OutputDevice
     import adafruit_scd4x
     import board
-    import digitalio
     import busio
     import adafruit_mcp3xxx.mcp3008 as MCP
     from adafruit_mcp3xxx.analog_in import AnalogIn
     import time
     GPIO_AVAILABLE = True
-except ImportError:
-    print("⚠️ GPIO libraries not available - running in simulation mode")
+    print("✅ GPIO Zero and sensor libraries loaded successfully")
+except ImportError as e:
+    print(f"⚠️ GPIO libraries not available: {e}")
+    print("Running in simulation mode")
     GPIO_AVAILABLE = False
 
 # Import configuration
@@ -278,34 +279,31 @@ class GPIOControlService:
             self.setup_gpio()
         
     def setup_gpio(self):
-        """Initialize GPIO pins"""
+        """Initialize GPIO pins using GPIO Zero"""
         try:
-            GPIO.setmode(GPIO.BCM)
-            GPIO.setwarnings(False)
+            # Setup control devices using GPIO Zero
+            self.fogger = OutputDevice(GPIO_CONFIG['FOGGER_PIN'])
+            self.fan = OutputDevice(GPIO_CONFIG['FAN_PIN'])
+            self.heater = OutputDevice(GPIO_CONFIG['HEATER_PIN'])
+            self.lights = OutputDevice(GPIO_CONFIG['LED_LIGHTS_PIN'])
             
-            # Setup control pins as outputs
-            GPIO.setup(GPIO_CONFIG['FOGGER_PIN'], GPIO.OUT)
-            GPIO.setup(GPIO_CONFIG['FAN_PIN'], GPIO.OUT)
-            GPIO.setup(GPIO_CONFIG['HEATER_PIN'], GPIO.OUT)
-            GPIO.setup(GPIO_CONFIG['LED_LIGHTS_PIN'], GPIO.OUT)
-            
-            # Setup status LED pins
-            GPIO.setup(GPIO_CONFIG['STATUS_LED_GREEN'], GPIO.OUT)
-            GPIO.setup(GPIO_CONFIG['STATUS_LED_RED'], GPIO.OUT)
-            GPIO.setup(GPIO_CONFIG['STATUS_LED_BLUE'], GPIO.OUT)
+            # Setup status LEDs
+            self.status_led_green = LED(GPIO_CONFIG['STATUS_LED_GREEN'])
+            self.status_led_red = LED(GPIO_CONFIG['STATUS_LED_RED'])
+            self.status_led_blue = LED(GPIO_CONFIG['STATUS_LED_BLUE'])
             
             # Initialize all outputs to OFF
-            GPIO.output(GPIO_CONFIG['FOGGER_PIN'], GPIO.LOW)
-            GPIO.output(GPIO_CONFIG['FAN_PIN'], GPIO.LOW)
-            GPIO.output(GPIO_CONFIG['HEATER_PIN'], GPIO.LOW)
-            GPIO.output(GPIO_CONFIG['LED_LIGHTS_PIN'], GPIO.LOW)
+            self.fogger.off()
+            self.fan.off()
+            self.heater.off()
+            self.lights.off()
             
             # Set status LED to green (system OK)
-            GPIO.output(GPIO_CONFIG['STATUS_LED_GREEN'], GPIO.HIGH)
-            GPIO.output(GPIO_CONFIG['STATUS_LED_RED'], GPIO.LOW)
-            GPIO.output(GPIO_CONFIG['STATUS_LED_BLUE'], GPIO.LOW)
+            self.status_led_green.on()
+            self.status_led_red.off()
+            self.status_led_blue.off()
             
-            print("✅ GPIO initialized successfully")
+            print("✅ GPIO Zero devices initialized successfully")
         except Exception as e:
             print(f"❌ GPIO setup error: {e}")
     
@@ -318,7 +316,7 @@ class GPIOControlService:
             
         try:
             if activate:
-                GPIO.output(GPIO_CONFIG['FOGGER_PIN'], GPIO.HIGH)
+                self.fogger.on()
                 self.fogger_active = True
                 print("🌫️ Fogger activated")
                 
@@ -326,7 +324,7 @@ class GPIOControlService:
                     # Auto-turn off after duration
                     threading.Timer(duration, self.control_fogger, [False]).start()
             else:
-                GPIO.output(GPIO_CONFIG['FOGGER_PIN'], GPIO.LOW)
+                self.fogger.off()
                 self.fogger_active = False
                 print("🌫️ Fogger deactivated")
         except Exception as e:
@@ -341,12 +339,13 @@ class GPIOControlService:
             
         try:
             if speed_percent > 0:
-                GPIO.output(GPIO_CONFIG['FAN_PIN'], GPIO.HIGH)
-                # In real implementation, you'd use PWM for speed control
-                # pwm = GPIO.PWM(GPIO_CONFIG['FAN_PIN'], 1000)
-                # pwm.start(speed_percent)
+                self.fan.on()
+                # Note: For PWM speed control, you'd use PWMOutputDevice instead
+                # from gpiozero import PWMOutputDevice
+                # self.fan = PWMOutputDevice(GPIO_CONFIG['FAN_PIN'])
+                # self.fan.value = speed_percent / 100.0
             else:
-                GPIO.output(GPIO_CONFIG['FAN_PIN'], GPIO.LOW)
+                self.fan.off()
             
             self.fan_speed = speed_percent
             print(f"🌬️ Fan speed set to {speed_percent}%")
@@ -361,7 +360,10 @@ class GPIOControlService:
             return
             
         try:
-            GPIO.output(GPIO_CONFIG['LED_LIGHTS_PIN'], GPIO.HIGH if activate else GPIO.LOW)
+            if activate:
+                self.lights.on()
+            else:
+                self.lights.off()
             self.lights_active = activate
             print(f"💡 Lights {'activated' if activate else 'deactivated'}")
         except Exception as e:
@@ -400,64 +402,48 @@ class SensorService:
     def setup_sensors(self):
         """Initialize sensors"""
         try:
-            # I2C setup for SCD41 sensor
+            # I2C setup for SCD40 sensor (pins 3=SDA, 5=SCL)
             i2c = busio.I2C(board.SCL, board.SDA)
-            self.scd41 = adafruit_scd4x.SCD4X(i2c)
-            self.scd41.start_periodic_measurement()
+            self.scd40 = adafruit_scd4x.SCD4X(i2c)
+            print("🔄 Starting SCD40 periodic measurement...")
+            self.scd40.start_periodic_measurement()
             
             # SPI setup for MCP3008 ADC (for light sensor)
             spi = busio.SPI(clock=getattr(board, f'D{GPIO_CONFIG["SPI_CLK"]}'),
                           MISO=getattr(board, f'D{GPIO_CONFIG["SPI_MISO"]}'),
                           MOSI=getattr(board, f'D{GPIO_CONFIG["SPI_MOSI"]}'))
-            cs = digitalio.DigitalInOut(getattr(board, f'D{GPIO_CONFIG["SPI_CS"]}'))
+            cs = getattr(board, f'D{GPIO_CONFIG["SPI_CS"]}')
             
             self.mcp = MCP.MCP3008(spi, cs)
             self.light_sensor = AnalogIn(self.mcp, MCP.P0)  # Channel 0 for light
             
-            # Setup ultrasonic sensor pins
-            GPIO.setup(GPIO_CONFIG['ULTRASONIC_TRIG_PIN'], GPIO.OUT)
-            GPIO.setup(GPIO_CONFIG['ULTRASONIC_ECHO_PIN'], GPIO.IN)
+            # Setup ultrasonic sensor using GPIO Zero
+            self.water_sensor = DistanceSensor(
+                echo=GPIO_CONFIG['ULTRASONIC_ECHO_PIN'], 
+                trigger=GPIO_CONFIG['ULTRASONIC_TRIG_PIN'],
+                max_distance=1  # 1 meter max range
+            )
             
             print("✅ Sensors initialized successfully")
-            print("  - SCD41 (Temperature, Humidity, CO2)")
-            print("  - Light sensor via MCP3008")
-            print("  - Ultrasonic water level sensor")
+            print("  - SCD40 (Temperature, Humidity, CO2) on I2C")
+            print("  - Light sensor via MCP3008 ADC")
+            print("  - Ultrasonic water level sensor (GPIO Zero)")
         except Exception as e:
             print(f"❌ Sensor setup error: {e}")
-            self.scd41 = None
+            self.scd40 = None
             self.mcp = None
+            self.water_sensor = None
     
     def read_ultrasonic_distance(self):
-        """Read distance from ultrasonic sensor in cm"""
+        """Read distance from ultrasonic sensor in cm using GPIO Zero"""
         try:
-            # Send trigger pulse
-            GPIO.output(GPIO_CONFIG['ULTRASONIC_TRIG_PIN'], GPIO.HIGH)
-            time.sleep(0.00001)  # 10 microseconds
-            GPIO.output(GPIO_CONFIG['ULTRASONIC_TRIG_PIN'], GPIO.LOW)
-            
-            # Wait for echo
-            pulse_start = time.time()
-            pulse_end = time.time()
-            
-            # Wait for echo to go HIGH
-            timeout = time.time() + 0.1  # 100ms timeout
-            while GPIO.input(GPIO_CONFIG['ULTRASONIC_ECHO_PIN']) == 0:
-                pulse_start = time.time()
-                if time.time() > timeout:
-                    return None
-            
-            # Wait for echo to go LOW
-            timeout = time.time() + 0.1  # 100ms timeout
-            while GPIO.input(GPIO_CONFIG['ULTRASONIC_ECHO_PIN']) == 1:
-                pulse_end = time.time()
-                if time.time() > timeout:
-                    return None
-            
-            # Calculate distance
-            pulse_duration = pulse_end - pulse_start
-            distance = pulse_duration * 17150  # Speed of sound = 34300 cm/s, divide by 2
-            
-            return round(distance, 2)
+            if hasattr(self, 'water_sensor') and self.water_sensor:
+                # GPIO Zero DistanceSensor returns distance in meters
+                distance_m = self.water_sensor.distance
+                distance_cm = distance_m * 100  # Convert to centimeters
+                return round(distance_cm, 2)
+            else:
+                return None
         except Exception as e:
             print(f"❌ Ultrasonic sensor error: {e}")
             return None
@@ -490,17 +476,18 @@ class SensorService:
         data = self.current_data.copy()
         
         try:
-            # Read SCD41 (temperature, humidity, CO2)
-            if hasattr(self, 'scd41') and self.scd41:
-                if self.scd41.data_ready:
-                    temp = self.scd41.temperature
-                    humidity = self.scd41.relative_humidity
-                    co2 = self.scd41.CO2
+            # Read SCD40 (temperature, humidity, CO2)
+            if hasattr(self, 'scd40') and self.scd40:
+                if self.scd40.data_ready:
+                    temp = self.scd40.temperature
+                    humidity = self.scd40.relative_humidity
+                    co2 = self.scd40.CO2
                     
                     if temp is not None and humidity is not None and co2 is not None:
                         data['temperature'] = round(temp + SENSOR_CONFIG['calibration_offsets']['temperature'], 1)
                         data['humidity'] = round(humidity + SENSOR_CONFIG['calibration_offsets']['humidity'], 1)
                         data['co2'] = int(co2 + SENSOR_CONFIG['calibration_offsets']['co2'])
+                        print(f"📡 SCD40 readings: T={temp:.1f}°C, H={humidity:.1f}%, CO2={co2}ppm")
             
             # Read light sensor (photoresistor via ADC)
             if hasattr(self, 'light_sensor') and self.light_sensor:
@@ -511,75 +498,33 @@ class SensorService:
             
             # Read water level via ultrasonic sensor
             distance = self.read_ultrasonic_distance()
-            water_level = self.calculate_water_level_percentage(distance)
-            data['water_level'] = water_level + SENSOR_CONFIG['calibration_offsets']['water_level']
+            if distance is not None:
+                water_level = self.calculate_water_level_percentage(distance)
+                data['water_level'] = water_level + SENSOR_CONFIG['calibration_offsets']['water_level']
+                print(f"💧 Water level: {distance:.1f}cm distance = {water_level:.1f}%")
+            
+            # Update timestamp
+            data['timestamp'] = datetime.utcnow().isoformat()
+            
+            # Determine mushroom status
+            data['mushroom_status'] = self.determine_mushroom_status(
+                data['temperature'], data['humidity'], data['co2'], 
+                data['light_intensity'], data['water_level']
+            )
+            data['mushroom_phase'] = CURRENT_PHASE
             
         except Exception as e:
             print(f"❌ Sensor reading error: {e}")
         
         return data
     
-    def simulate_realistic_data(self):
-        """Create realistic sensor simulation for mushroom growing"""
-        self.simulation_time += SENSOR_READ_INTERVAL
-        
-        # Get optimal ranges for current phase
-        phase_config = GROWTH_PHASES.get(CURRENT_PHASE, GROWTH_PHASES['fruiting'])
-        
-        # Temperature simulation based on mushroom growth phase
-        temp_min, temp_max = phase_config['temp_range']
-        temp_base = (temp_min + temp_max) / 2
-        temp_variation = random.uniform(-1.0, 1.0)
-        temperature = temp_base + temp_variation
-        
-        # Humidity simulation based on mushroom growth phase
-        humidity_min, humidity_max = phase_config['humidity_range']
-        humidity_base = (humidity_min + humidity_max) / 2
-        humidity_variation = random.uniform(-5, 5)
-        humidity = max(50, min(98, humidity_base + humidity_variation))
-        
-        # CO2 simulation
-        co2_base = random.choice([800, 900, 1000, 1100])
-        co2_variation = random.uniform(-100, 150)
-        co2 = max(400, co2_base + co2_variation)
-        
-        # Light intensity simulation
-        hour = datetime.now().hour
-        if phase_config['light_needed'] and 6 <= hour <= 18:
-            light_base = 500
-            light_variation = random.uniform(-100, 100)
+    def get_sensor_data(self):
+        """Get current sensor data from real sensors only"""
+        if GPIO_AVAILABLE and hasattr(self, 'scd40'):
+            return self.read_real_sensors()
         else:
-            light_base = 50
-            light_variation = random.uniform(-20, 20)
-        light_intensity = max(0, light_base + light_variation)
-        
-        # Water level simulation (decreases over time when fogger is active)
-        water_level_base = 75  # Start with 75% water level
-        # Simulate water consumption (decreases when fogger is active)
-        if hasattr(gpio_control, 'fogger_active') and gpio_control.fogger_active:
-            water_consumption = random.uniform(0.5, 1.5)  # Faster consumption when fogger active
-        else:
-            water_consumption = random.uniform(0.1, 0.3)  # Slow evaporation
-        
-        # Add some randomness but keep it realistic
-        water_level = max(10, min(100, water_level_base + random.uniform(-10, 5) - (self.simulation_time / 3600) * water_consumption))
-        
-        # Determine mushroom status based on conditions
-        mushroom_status = self.determine_mushroom_status(temperature, humidity, co2, light_intensity, water_level)
-        
-        self.current_data = {
-            'temperature': round(temperature, 1),
-            'humidity': round(humidity, 1),
-            'co2': int(co2),
-            'light_intensity': int(light_intensity),
-            'water_level': round(water_level, 1),
-            'timestamp': datetime.utcnow().isoformat(),
-            'device_id': DEVICE_ID,
-            'mushroom_phase': CURRENT_PHASE,
-            'mushroom_status': mushroom_status
-        }
-        
-        return self.current_data
+            print("⚠️ GPIO not available - no sensor data")
+            return self.current_data
     
     def determine_mushroom_status(self, temp, humidity, co2, light, water_level):
         """Determine mushroom health status based on environmental conditions"""
@@ -614,12 +559,7 @@ class SensorService:
         else:
             return 'critical'
     
-    def get_sensor_data(self):
-        """Get current sensor data (real or simulated)"""
-        if GPIO_AVAILABLE and hasattr(self, 'dht'):
-            return self.read_real_sensors()
-        else:
-            return self.simulate_realistic_data()
+
 
 # Initialize services
 sensor_service = SensorService()
@@ -874,12 +814,10 @@ def main():
         socketio.run(app, host='0.0.0.0', port=5000, debug=False, use_reloader=False)
     except KeyboardInterrupt:
         print("🛑 Server stopped")
-        if GPIO_AVAILABLE:
-            GPIO.cleanup()
+        print("🧹 GPIO Zero will automatically cleanup")
     except Exception as e:
         print(f"❌ Server error: {e}")
-        if GPIO_AVAILABLE:
-            GPIO.cleanup()
+        print("🧹 GPIO Zero will automatically cleanup")
 
 if __name__ == '__main__':
     main()

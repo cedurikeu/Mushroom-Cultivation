@@ -2,9 +2,15 @@
 
 # GPIO Pin Assignments
 GPIO_CONFIG = {
-    # Sensor Pins
-    'SCD41_SDA_PIN': 2,          # SCD41 I2C SDA pin (GPIO 2)
-    'SCD41_SCL_PIN': 3,          # SCD41 I2C SCL pin (GPIO 3)
+    # SCD40 Sensor Pins (Physical pins)
+    # Pin 1: 3.3V Power
+    # Pin 3: SDA (GPIO 2)  
+    # Pin 5: SCL (GPIO 3)
+    # Pin 9: Ground
+    'SCD40_SDA_PIN': 2,          # SCD40 I2C SDA pin (Physical pin 3)
+    'SCD40_SCL_PIN': 3,          # SCD40 I2C SCL pin (Physical pin 5)
+    
+    # Other Sensor Pins
     'LIGHT_SENSOR_PIN': 0,       # Light intensity (MCP3008 ADC Channel 0)
     'ULTRASONIC_TRIG_PIN': 23,   # Ultrasonic trigger pin for water level
     'ULTRASONIC_ECHO_PIN': 24,   # Ultrasonic echo pin for water level
