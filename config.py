@@ -1,4 +1,4 @@
-# GPIO Configuration for Raspberry Pi Mushroom Environmental Control System
+# GPIO Configuration for Raspberry Pi Environmental Control System
 
 # GPIO Pin Assignments
 GPIO_CONFIG = {
@@ -33,7 +33,7 @@ GPIO_CONFIG = {
     'SPI_CS': 8
 }
 
-# Sensor Thresholds and Optimal Ranges for Mushroom Growing
+# Sensor Thresholds and Optimal Ranges
 MUSHROOM_CONFIG = {
     'optimal_ranges': {
         'temperature': {'min': 18, 'max': 24},      # Celsius
@@ -57,38 +57,6 @@ MUSHROOM_CONFIG = {
             'on_hour': 6,           # 6 AM
             'off_hour': 18          # 6 PM
         }
-    }
-}
-
-# Mushroom Growth Phases
-GROWTH_PHASES = {
-    'inoculation': {
-        'name': 'Inoculation',
-        'duration_days': 14,
-        'temp_range': (20, 22),
-        'humidity_range': (60, 70),
-        'light_needed': False
-    },
-    'colonization': {
-        'name': 'Colonization',
-        'duration_days': 21,
-        'temp_range': (22, 24),
-        'humidity_range': (70, 80),
-        'light_needed': False
-    },
-    'pinning': {
-        'name': 'Pin Formation',
-        'duration_days': 7,
-        'temp_range': (18, 20),
-        'humidity_range': (85, 95),
-        'light_needed': True
-    },
-    'fruiting': {
-        'name': 'Fruiting',
-        'duration_days': 14,
-        'temp_range': (18, 22),
-        'humidity_range': (80, 90),
-        'light_needed': True
     }
 }
 

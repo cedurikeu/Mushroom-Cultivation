@@ -127,19 +127,7 @@
         .light .sensor-value { color: #9b59b6; }
         .water .sensor-value { color: #17a2b8; }
 
-        .mushroom-status {
-            background: rgba(255, 255, 255, 0.95);
-            padding: 2rem;
-            border-radius: 15px;
-            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.1);
-            margin-bottom: 2rem;
-            text-align: center;
-        }
 
-        .status-optimal { border-left: 5px solid #27ae60; }
-        .status-good { border-left: 5px solid #f1c40f; }
-        .status-warning { border-left: 5px solid #f39c12; }
-        .status-critical { border-left: 5px solid #e74c3c; }
 
         .controls-section {
             background: rgba(255, 255, 255, 0.95);
@@ -188,16 +176,7 @@
         .fan-btn { background: #e67e22; color: white; }
         .lights-btn { background: #f1c40f; color: #333; }
 
-        .phase-selector {
-            margin: 1rem 0;
-        }
 
-        .phase-selector select {
-            padding: 0.5rem;
-            border-radius: 5px;
-            border: 1px solid #ddd;
-            font-size: 1rem;
-        }
 
         .chart-container {
             background: rgba(255, 255, 255, 0.95);
@@ -282,9 +261,6 @@
             <div id="db-status" class="status-indicator">
                 <span>📊 Database: <span id="db-type">Loading...</span></span>
             </div>
-            <div id="phase-status" class="status-indicator">
-                <span>🍄 Phase: <span id="current-phase">Loading...</span></span>
-            </div>
             <a href="/logout" class="logout-btn">🚪 Logout</a>
         </div>
     </div>
@@ -334,21 +310,7 @@
             <canvas id="sensorChart" width="400" height="200"></canvas>
         </div>
 
-        <!-- Mushroom Status -->
-        <div class="mushroom-status" id="mushroom-status">
-            <h2>🍄 Mushroom Status: <span id="status-text">Loading...</span></h2>
-            <p>Growth Phase: <span id="growth-phase">--</span></p>
-            <div class="phase-selector">
-                <label>Change Growth Phase: </label>
-                <select id="phase-select">
-                    <option value="inoculation">Inoculation</option>
-                    <option value="colonization">Colonization</option>
-                    <option value="pinning">Pin Formation</option>
-                    <option value="fruiting">Fruiting</option>
-                </select>
-                <button onclick="changePhase()" class="control-btn">Update Phase</button>
-            </div>
-        </div>
+
 
         <!-- Environmental Controls -->
         <div class="controls-section">
@@ -378,13 +340,11 @@
                         <th>CO2 (ppm)</th>
                         <th>Light</th>
                         <th>Water (%)</th>
-                        <th>Status</th>
-                        <th>Phase</th>
                     </tr>
                 </thead>
                 <tbody id="readings-table">
                     <tr>
-                        <td colspan="8" class="loading">Loading recent readings...</td>
+                        <td colspan="6" class="loading">Loading recent readings...</td>
                     </tr>
                 </tbody>
             </table>
@@ -535,18 +495,7 @@
                 waterCard.style.backgroundColor = 'rgba(255, 255, 255, 0.95)';
             }
             
-            // Update mushroom status
-            if (data.mushroom_status) {
-                const statusElement = document.getElementById('mushroom-status');
-                const statusText = document.getElementById('status-text');
-                const phaseText = document.getElementById('growth-phase');
-                
-                statusText.textContent = data.mushroom_status.toUpperCase();
-                phaseText.textContent = data.mushroom_phase || '--';
-                
-                // Update status styling
-                statusElement.className = 'mushroom-status status-' + data.mushroom_status;
-            }
+
             
             // Update controls if provided
             if (data.controls) {
@@ -669,8 +618,6 @@
                             <td>${reading.co2 || 'N/A'} ppm</td>
                             <td>${reading.light_intensity || 'N/A'}</td>
                             <td>${reading.water_level || 'N/A'}%</td>
-                            <td>${reading.mushroom_status || 'Unknown'}</td>
-                            <td>${reading.mushroom_phase || 'Unknown'}</td>
                         `;
                         tbody.appendChild(row);
                     });
@@ -678,7 +625,7 @@
                 .catch(error => {
                     console.error('Error loading recent readings:', error);
                     document.getElementById('readings-table').innerHTML = 
-                        '<tr><td colspan="8" class="loading">Error loading readings</td></tr>';
+                        '<tr><td colspan="6" class="loading">Error loading readings</td></tr>';
                 });
         }
 
@@ -705,10 +652,6 @@
 
         socket.on('status_update', function(data) {
             document.getElementById('db-type').textContent = data.database;
-            if (data.mushroom_phase) {
-                document.getElementById('current-phase').textContent = data.mushroom_phase;
-                document.getElementById('phase-select').value = data.mushroom_phase;
-            }
         });
 
         // Load database status
@@ -717,10 +660,6 @@
                 .then(response => response.json())
                 .then(data => {
                     document.getElementById('db-type').textContent = data.database;
-                    if (data.mushroom_phase) {
-                        document.getElementById('current-phase').textContent = data.mushroom_phase;
-                        document.getElementById('phase-select').value = data.mushroom_phase;
-                    }
                     if (data.controls) {
                         updateControlsDisplay(data.controls);
                     }
@@ -777,24 +716,7 @@
             .catch(error => console.error('Error controlling lights:', error));
         }
         
-        function changePhase() {
-            const newPhase = document.getElementById('phase-select').value;
-            fetch('/api/phase', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({phase: newPhase})
-            })
-            .then(response => response.json())
-            .then(data => {
-                if (data.success) {
-                    console.log(data.message);
-                    document.getElementById('current-phase').textContent = newPhase;
-                } else {
-                    alert('Error changing phase: ' + data.message);
-                }
-            })
-            .catch(error => console.error('Error changing phase:', error));
-        }
+
 
         // Initialize dashboard
         document.addEventListener('DOMContentLoaded', function() {
@@ -809,8 +731,7 @@
                 loadDatabaseStatus();
             }, 30000);
             
-            // Set default phase in selector
-            document.getElementById('phase-select').value = 'pinning';
+
         });
     </script>
 </body>

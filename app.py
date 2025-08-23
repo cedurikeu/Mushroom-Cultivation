@@ -11,27 +11,17 @@ from flask import Flask, jsonify, render_template, request, redirect, url_for, s
 from flask_socketio import SocketIO, emit
 from flask_cors import CORS
 from pymongo import MongoClient
-import random
-import math
 
 # Import GPIO and sensor libraries
-try:
-    from gpiozero import DistanceSensor, LED, OutputDevice
-    import adafruit_scd4x
-    import board
-    import busio
-    import adafruit_mcp3xxx.mcp3008 as MCP
-    from adafruit_mcp3xxx.analog_in import AnalogIn
-    import time
-    GPIO_AVAILABLE = True
-    print("✅ GPIO Zero and sensor libraries loaded successfully")
-except ImportError as e:
-    print(f"⚠️ GPIO libraries not available: {e}")
-    print("Running in simulation mode")
-    GPIO_AVAILABLE = False
+from gpiozero import DistanceSensor, LED, OutputDevice
+import adafruit_scd4x
+import board
+import busio
+import adafruit_mcp3xxx.mcp3008 as MCP
+from adafruit_mcp3xxx.analog_in import AnalogIn
 
 # Import configuration
-from config import GPIO_CONFIG, MUSHROOM_CONFIG, GROWTH_PHASES, SENSOR_CONFIG
+from config import GPIO_CONFIG, MUSHROOM_CONFIG, SENSOR_CONFIG
 
 # Load environment variables
 load_dotenv()
@@ -42,16 +32,13 @@ SENSOR_READ_INTERVAL = SENSOR_CONFIG['read_interval']
 ALERT_THRESHOLDS = MUSHROOM_CONFIG['alert_thresholds']
 OPTIMAL_RANGES = MUSHROOM_CONFIG['optimal_ranges']
 
-# Current mushroom growth phase
-CURRENT_PHASE = 'pinning'  # Default phase
-
 # Initialize Flask
 app = Flask(__name__)
 CORS(app)
 app.config.update({
     'SECRET_KEY': os.getenv('SECRET_KEY', 'pentaplets'),
     'MONGO_URI': os.getenv('MONGODB_URI'),
-    'DASHBOARD_PASSWORD': os.getenv('DASHBOARD_PASSWORD', 'pentaplets')  # Change this!
+    'DASHBOARD_PASSWORD': os.getenv('DASHBOARD_PASSWORD', 'pentaplets')
 })
 
 # Initialize SocketIO
@@ -121,8 +108,6 @@ class DatabaseService:
                     co2 INTEGER,
                     light_intensity INTEGER,
                     water_level REAL,
-                    mushroom_phase TEXT,
-                    mushroom_status TEXT,
                     timestamp TEXT,
                     server_timestamp TEXT
                 )
@@ -157,8 +142,8 @@ class DatabaseService:
             try:
                 cursor = self.sqlite_conn.cursor()
                 cursor.execute('''
-                    INSERT INTO readings (device_id, temperature, humidity, co2, light_intensity, water_level, mushroom_phase, mushroom_status, timestamp, server_timestamp)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO readings (device_id, temperature, humidity, co2, light_intensity, water_level, timestamp, server_timestamp)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     data['device_id'],
                     data['temperature'],
@@ -166,8 +151,6 @@ class DatabaseService:
                     data.get('co2', 400),
                     data.get('light_intensity', 0),
                     data.get('water_level', 50.0),
-                    data.get('mushroom_phase', 'fruiting'),
-                    data.get('mushroom_status', 'unknown'),
                     data['timestamp'],
                     datetime.utcnow().isoformat()
                 ))
@@ -274,9 +257,7 @@ class GPIOControlService:
         self.fan_speed = 0
         self.heater_active = False
         self.lights_active = False
-        
-        if GPIO_AVAILABLE:
-            self.setup_gpio()
+        self.setup_gpio()
         
     def setup_gpio(self):
         """Initialize GPIO pins using GPIO Zero"""
@@ -309,11 +290,6 @@ class GPIOControlService:
     
     def control_fogger(self, activate=True, duration=None):
         """Control the fogger"""
-        if not GPIO_AVAILABLE:
-            print(f"🌫️ Fogger {'ON' if activate else 'OFF'} (simulation)")
-            self.fogger_active = activate
-            return
-            
         try:
             if activate:
                 self.fogger.on()
@@ -332,18 +308,9 @@ class GPIOControlService:
     
     def control_fan(self, speed_percent=0):
         """Control exhaust fan speed (0-100%)"""
-        if not GPIO_AVAILABLE:
-            print(f"🌬️ Fan speed: {speed_percent}% (simulation)")
-            self.fan_speed = speed_percent
-            return
-            
         try:
             if speed_percent > 0:
                 self.fan.on()
-                # Note: For PWM speed control, you'd use PWMOutputDevice instead
-                # from gpiozero import PWMOutputDevice
-                # self.fan = PWMOutputDevice(GPIO_CONFIG['FAN_PIN'])
-                # self.fan.value = speed_percent / 100.0
             else:
                 self.fan.off()
             
@@ -354,11 +321,6 @@ class GPIOControlService:
     
     def control_lights(self, activate=True):
         """Control LED grow lights"""
-        if not GPIO_AVAILABLE:
-            print(f"💡 Lights {'ON' if activate else 'OFF'} (simulation)")
-            self.lights_active = activate
-            return
-            
         try:
             if activate:
                 self.lights.on()
@@ -383,7 +345,6 @@ class GPIOControlService:
 # ========================
 class SensorService:
     def __init__(self):
-        self.simulation_time = 0
         self.current_data = {
             'temperature': 0,
             'humidity': 0,
@@ -391,13 +352,9 @@ class SensorService:
             'light_intensity': 0,
             'water_level': 50.0,
             'timestamp': datetime.utcnow().isoformat(),
-            'device_id': DEVICE_ID,
-            'mushroom_phase': CURRENT_PHASE,
-            'mushroom_status': 'healthy'
+            'device_id': DEVICE_ID
         }
-        
-        if GPIO_AVAILABLE:
-            self.setup_sensors()
+        self.setup_sensors()
         
     def setup_sensors(self):
         """Initialize sensors"""
@@ -471,7 +428,7 @@ class SensorService:
             percentage = ((water_depth - min_depth) / (max_depth - min_depth)) * 100
             return round(percentage, 1)
     
-    def read_real_sensors(self):
+    def read_sensors(self):
         """Read data from actual GPIO sensors"""
         data = self.current_data.copy()
         
@@ -506,60 +463,14 @@ class SensorService:
             # Update timestamp
             data['timestamp'] = datetime.utcnow().isoformat()
             
-            # Determine mushroom status
-            data['mushroom_status'] = self.determine_mushroom_status(
-                data['temperature'], data['humidity'], data['co2'], 
-                data['light_intensity'], data['water_level']
-            )
-            data['mushroom_phase'] = CURRENT_PHASE
-            
         except Exception as e:
             print(f"❌ Sensor reading error: {e}")
         
         return data
     
     def get_sensor_data(self):
-        """Get current sensor data from real sensors only"""
-        if GPIO_AVAILABLE and hasattr(self, 'scd40'):
-            return self.read_real_sensors()
-        else:
-            print("⚠️ GPIO not available - no sensor data")
-            return self.current_data
-    
-    def determine_mushroom_status(self, temp, humidity, co2, light, water_level):
-        """Determine mushroom health status based on environmental conditions"""
-        phase_config = GROWTH_PHASES.get(CURRENT_PHASE, GROWTH_PHASES['fruiting'])
-        
-        # Check if conditions are within optimal ranges
-        temp_min, temp_max = phase_config['temp_range']
-        humidity_min, humidity_max = phase_config['humidity_range']
-        
-        issues = []
-        
-        if temp < temp_min - 2 or temp > temp_max + 2:
-            issues.append('temperature')
-        if humidity < humidity_min - 10 or humidity > humidity_max + 5:
-            issues.append('humidity')
-        if co2 < 600 or co2 > 1500:
-            issues.append('co2')
-        if phase_config['light_needed'] and light < 200:
-            issues.append('light')
-        if water_level < 20:
-            issues.append('water_level')
-        
-        # Prioritize critical water level
-        if water_level < 10:
-            return 'critical'
-        elif not issues:
-            return 'optimal'
-        elif len(issues) == 1:
-            return 'good'
-        elif len(issues) == 2:
-            return 'warning'
-        else:
-            return 'critical'
-    
-
+        """Get current sensor data"""
+        return self.read_sensors()
 
 # Initialize services
 sensor_service = SensorService()
@@ -615,9 +526,7 @@ def get_status():
         'database': 'MongoDB' if db_service.use_mongo else 'SQLite',
         'connected': db_service.use_mongo or db_service.sqlite_conn is not None,
         'device_id': DEVICE_ID,
-        'mushroom_phase': CURRENT_PHASE,
-        'controls': control_status,
-        'gpio_available': GPIO_AVAILABLE
+        'controls': control_status
     })
 
 @app.route('/api/control/fogger', methods=['POST'])
@@ -663,27 +572,6 @@ def control_lights():
         'message': f"Lights {'activated' if activate else 'deactivated'}"
     })
 
-@app.route('/api/phase', methods=['POST'])
-@require_auth
-def set_mushroom_phase():
-    global CURRENT_PHASE
-    data = request.get_json()
-    new_phase = data.get('phase')
-    
-    if new_phase in GROWTH_PHASES:
-        CURRENT_PHASE = new_phase
-        return jsonify({
-            'success': True,
-            'current_phase': CURRENT_PHASE,
-            'phase_config': GROWTH_PHASES[CURRENT_PHASE],
-            'message': f"Mushroom phase set to {GROWTH_PHASES[CURRENT_PHASE]['name']}"
-        })
-    else:
-        return jsonify({
-            'success': False,
-            'message': 'Invalid phase specified'
-        }), 400
-
 # SocketIO Handlers
 @socketio.on('connect')
 def handle_connect():
@@ -706,7 +594,7 @@ def sensor_monitor():
     """Background task to read sensor data and save to database"""
     while True:
         try:
-            # Get sensor data (real or simulated)
+            # Get sensor data
             sensor_data = sensor_service.get_sensor_data()
             
             # Auto-control based on conditions
@@ -724,9 +612,7 @@ def sensor_monitor():
             socketio.emit('sensor_update', update_data)
             
             # Log current values
-            status_emoji = {'optimal': '🟢', 'good': '🟡', 'warning': '🟠', 'critical': '🔴'}
-            emoji = status_emoji.get(sensor_data['mushroom_status'], '⚪')
-            print(f"📊 {emoji} T: {sensor_data['temperature']}°C, H: {sensor_data['humidity']}%, CO2: {sensor_data['co2']}ppm, Light: {sensor_data['light_intensity']}, Water: {sensor_data['water_level']}%, Status: {sensor_data['mushroom_status']}")
+            print(f"📊 T: {sensor_data['temperature']}°C, H: {sensor_data['humidity']}%, CO2: {sensor_data['co2']}ppm, Light: {sensor_data['light_intensity']}, Water: {sensor_data['water_level']}%")
             
             time.sleep(SENSOR_READ_INTERVAL)
             
@@ -737,7 +623,6 @@ def sensor_monitor():
 def auto_control_environment(sensor_data):
     """Automatically control environment based on sensor readings"""
     try:
-        phase_config = GROWTH_PHASES.get(CURRENT_PHASE, GROWTH_PHASES['fruiting'])
         temp = sensor_data['temperature']
         humidity = sensor_data['humidity']
         water_level = sensor_data.get('water_level', 50.0)
@@ -749,7 +634,8 @@ def auto_control_environment(sensor_data):
                 print("🚨 Low water level detected - Fogger disabled!")
         
         # Auto-fogger control based on humidity (only if water level is sufficient)
-        humidity_min, humidity_max = phase_config['humidity_range']
+        humidity_min = OPTIMAL_RANGES['humidity']['min']
+        humidity_max = OPTIMAL_RANGES['humidity']['max']
         if (humidity < humidity_min - 5 and not gpio_control.fogger_active and water_level > 20):
             gpio_control.control_fogger(True, MUSHROOM_CONFIG['control_settings']['fogger_duration'])
         
@@ -759,11 +645,10 @@ def auto_control_environment(sensor_data):
         elif humidity <= humidity_max and gpio_control.fan_speed > 0:
             gpio_control.control_fan(0)
         
-        # Auto-light control based on time and growth phase
+        # Auto-light control based on time
         current_hour = datetime.now().hour
         light_schedule = MUSHROOM_CONFIG['control_settings']['light_schedule']
-        should_lights_be_on = (phase_config['light_needed'] and 
-                              light_schedule['on_hour'] <= current_hour < light_schedule['off_hour'])
+        should_lights_be_on = (light_schedule['on_hour'] <= current_hour < light_schedule['off_hour'])
         
         if should_lights_be_on != gpio_control.lights_active:
             gpio_control.control_lights(should_lights_be_on)
@@ -790,10 +675,9 @@ def database_health_monitor():
 # MAIN APPLICATION
 # ========================
 def main():
-    print("🍄 Starting Mushroom Environmental Control System")
+    print("🍄 Starting Environmental Control System")
     print(f"📊 Database: {'MongoDB' if db_service.use_mongo else 'SQLite'}")
-    print(f"🔌 GPIO: {'Available' if GPIO_AVAILABLE else 'Simulation Mode'}")
-    print(f"🌱 Current Phase: {GROWTH_PHASES[CURRENT_PHASE]['name']}")
+    print(f"🔌 GPIO: Available")
     
     # Start background threads
     threading.Thread(target=sensor_monitor, daemon=True).start()
