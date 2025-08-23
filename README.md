@@ -1,6 +1,6 @@
-# 🍄 Mushroom Environmental Control System
+# 🌱 Environmental Control System
 
-A comprehensive web-based environmental monitoring and control system for automated mushroom cultivation using Raspberry Pi.
+A comprehensive web-based environmental monitoring and control system using Raspberry Pi with MongoDB-only architecture for reliable offline operation.
 
 ## Features
 
@@ -17,16 +17,17 @@ A comprehensive web-based environmental monitoring and control system for automa
 - **Manual Override**: Web-based control interface
 
 ### 📊 Data Management
-- **Dual Database Support**: MongoDB Atlas (cloud) with SQLite fallback
-- **Automatic Failover**: Seamless switching when WiFi is lost
+- **MongoDB-Only Architecture**: Local MongoDB with Atlas cloud sync
+- **Offline Operation**: Continues working when internet is down
+- **Automatic Sync**: Data syncs to Atlas when internet is restored
 - **Historical Data**: Charts and tables for trend analysis
 - **Data Export**: Easy access to sensor readings
 
-### 🍄 Mushroom-Specific Features
-- **Growth Phase Tracking**: Inoculation → Colonization → Pinning → Fruiting
-- **Phase-Specific Controls**: Automated adjustments per growth stage
-- **Health Status Monitoring**: Real-time condition assessment
-- **Optimal Range Alerts**: Visual indicators for environmental conditions
+### 🌱 Environmental Control
+- **Real-time Monitoring**: Live sensor data and control status
+- **Automated Controls**: Smart environmental adjustments
+- **Manual Override**: Web-based control interface
+- **Status Monitoring**: Visual indicators for system health
 
 ## Hardware Requirements
 
@@ -85,10 +86,18 @@ sudo apt install python3-dev python3-gpiozero -y
 ### 2. Clone Repository
 ```bash
 git clone <your-repo-url>
-cd mushroom-control-system
+cd environmental-control-system
 ```
 
-### 3. Python Environment
+### 3. Install MongoDB
+```bash
+# Run the MongoDB setup script
+./setup_mongodb.sh
+```
+
+This will install and configure MongoDB locally on your Raspberry Pi.
+
+### 4. Python Environment
 ```bash
 # Create virtual environment
 python3 -m venv venv
@@ -98,18 +107,21 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 4. Configuration
+### 5. Configuration
 ```bash
-# Copy environment template
+# Create environment file
 cp .env.example .env
 
 # Edit configuration
 nano .env
 ```
 
-Update `.env` with your MongoDB Atlas connection string and other settings.
+Update `.env` with your settings:
+- `SECRET_KEY`: Your secret key
+- `DASHBOARD_PASSWORD`: Dashboard login password
+- `MONGODB_URI`: MongoDB Atlas connection string (optional)
 
-### 5. Hardware Connections
+### 6. Hardware Connections
 Connect sensors and control devices according to the GPIO configuration in `config.py`.
 
 ## Usage
@@ -125,15 +137,16 @@ python app.py
 
 The system will:
 1. Initialize GPIO pins and sensors
-2. Connect to databases (MongoDB → SQLite fallback)
-3. Start the web server on port 5000
-4. Automatically open browser to `http://localhost:5000`
+2. Connect to local MongoDB database
+3. Attempt to connect to MongoDB Atlas (if configured)
+4. Start the web server on port 5000
+5. Automatically open browser to `http://localhost:5000`
 
 ### Web Interface
 - **Login**: Default password is `admin123` (change in .env)
 - **Dashboard**: Real-time sensor readings and controls
+- **Database Status**: Shows local MongoDB and Atlas connection status
 - **Controls**: Manual override for fogger, fan, and lights
-- **Phase Management**: Set current mushroom growth phase
 - **Historical Data**: Charts and tables of past readings
 
 ### Remote Access
@@ -145,31 +158,16 @@ hostname -I
 # Access via browser at: http://YOUR_PI_IP:5000
 ```
 
-## Mushroom Growth Phases
+## Environmental Control
 
-### 1. Inoculation (14 days)
-- Temperature: 20-22°C
-- Humidity: 60-70%
-- Light: Not needed
-- Focus: Sterile conditions
+The system automatically manages environmental conditions:
 
-### 2. Colonization (21 days)
-- Temperature: 22-24°C
-- Humidity: 70-80%
-- Light: Not needed
-- Focus: Mycelium growth
-
-### 3. Pin Formation (7 days)
-- Temperature: 18-20°C
-- Humidity: 85-95%
-- Light: Required (12 hours/day)
-- Focus: Trigger fruiting
-
-### 4. Fruiting (14 days)
-- Temperature: 18-22°C
-- Humidity: 80-90%
-- Light: Required (12 hours/day)
-- Focus: Mushroom development
+### Optimal Ranges
+- **Temperature**: 18-24°C
+- **Humidity**: 80-95%
+- **CO2**: 800-1200 ppm
+- **Light**: 200-800 lux
+- **Water Level**: 20-100%
 
 ## Automatic Controls
 
@@ -181,9 +179,9 @@ The system automatically manages:
 - **Duration**: Configurable misting cycles
 
 ### Light Management
-- **Schedule**: 6 AM - 6 PM during light-required phases
+- **Schedule**: 6 AM - 6 PM daily
 - **Intensity**: Full spectrum LED grow lights
-- **Phase-based**: Only active during pinning and fruiting
+- **Automatic**: Based on time schedule
 
 ### Temperature Regulation
 - **Monitoring**: Continuous temperature tracking
@@ -192,17 +190,17 @@ The system automatically manages:
 
 ## Database Configuration
 
-### MongoDB Atlas (Primary)
-- Cloud-based storage
-- Automatic scaling
-- Global accessibility
-- Requires internet connection
-
-### SQLite (Fallback)
-- Local storage in `sensor_data.db`
+### Local MongoDB (Primary)
+- Local storage on Raspberry Pi
 - No internet required
-- Automatic failover
-- Data sync when reconnected
+- Fast local access
+- Automatic data persistence
+
+### MongoDB Atlas (Cloud Sync)
+- Cloud-based backup and remote access
+- Automatic sync when internet available
+- Global accessibility
+- Optional - system works offline
 
 ## API Endpoints
 
@@ -216,7 +214,7 @@ The system automatically manages:
 - `POST /api/control/fogger` - Control fogger
 - `POST /api/control/fan` - Control fan speed
 - `POST /api/control/lights` - Control grow lights
-- `POST /api/phase` - Set mushroom growth phase
+
 
 ## Troubleshooting
 
@@ -236,9 +234,10 @@ sudo reboot
 - Monitor system logs
 
 ### Database Connection
-- Verify MongoDB URI in .env
-- Check internet connectivity
-- SQLite fallback should work offline
+- Verify MongoDB is running: `sudo systemctl status mongod`
+- Check local MongoDB connection: `mongo --eval "db.runCommand('ping')"`
+- Verify Atlas URI in .env (optional)
+- Check internet connectivity for Atlas sync
 - Monitor connection status in dashboard
 
 ### Web Access

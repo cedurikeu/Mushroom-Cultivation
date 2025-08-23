@@ -50,6 +50,23 @@
             gap: 0.5rem;
         }
 
+        .atlas-indicator {
+            margin-left: 1rem;
+            padding: 0.25rem 0.5rem;
+            border-radius: 4px;
+            font-size: 0.8rem;
+        }
+
+        .atlas-connected {
+            background: rgba(39, 174, 96, 0.2);
+            color: #27ae60;
+        }
+
+        .atlas-offline {
+            background: rgba(231, 76, 60, 0.2);
+            color: #e74c3c;
+        }
+
         .status-online {
             background: #d4edda;
             color: #155724;
@@ -260,6 +277,7 @@
             </div>
             <div id="db-status" class="status-indicator">
                 <span>📊 Database: <span id="db-type">Loading...</span></span>
+                <span id="atlas-status" class="atlas-indicator">☁️ Atlas: <span id="atlas-status-text">Loading...</span></span>
             </div>
             <a href="/logout" class="logout-btn">🚪 Logout</a>
         </div>
@@ -652,6 +670,18 @@
 
         socket.on('status_update', function(data) {
             document.getElementById('db-type').textContent = data.database;
+            
+            // Update Atlas status
+            const atlasStatusText = document.getElementById('atlas-status-text');
+            const atlasStatus = document.getElementById('atlas-status');
+            
+            if (data.atlas_connected) {
+                atlasStatusText.textContent = 'Connected';
+                atlasStatus.className = 'atlas-indicator atlas-connected';
+            } else {
+                atlasStatusText.textContent = 'Offline';
+                atlasStatus.className = 'atlas-indicator atlas-offline';
+            }
         });
 
         // Load database status
@@ -660,6 +690,19 @@
                 .then(response => response.json())
                 .then(data => {
                     document.getElementById('db-type').textContent = data.database;
+                    
+                    // Update Atlas status
+                    const atlasStatusText = document.getElementById('atlas-status-text');
+                    const atlasStatus = document.getElementById('atlas-status');
+                    
+                    if (data.atlas_connected) {
+                        atlasStatusText.textContent = 'Connected';
+                        atlasStatus.className = 'atlas-indicator atlas-connected';
+                    } else {
+                        atlasStatusText.textContent = 'Offline';
+                        atlasStatus.className = 'atlas-indicator atlas-offline';
+                    }
+                    
                     if (data.controls) {
                         updateControlsDisplay(data.controls);
                     }

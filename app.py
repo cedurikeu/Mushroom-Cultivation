@@ -1,5 +1,4 @@
 import os
-import sqlite3
 import threading
 import time
 import webbrowser
@@ -11,6 +10,8 @@ from flask import Flask, jsonify, render_template, request, redirect, url_for, s
 from flask_socketio import SocketIO, emit
 from flask_cors import CORS
 from pymongo import MongoClient
+import subprocess
+import json
 
 # Import GPIO and sensor libraries
 from gpiozero import DistanceSensor, LED, OutputDevice
@@ -66,106 +67,148 @@ def require_auth(f):
 # ========================
 class DatabaseService:
     def __init__(self):
-        self.mongo_client = None
-        self.mongo_db = None
-        self.sqlite_conn = None
-        self.use_mongo = True
+        self.local_mongo_client = None
+        self.local_mongo_db = None
+        self.atlas_mongo_client = None
+        self.atlas_mongo_db = None
+        self.using_atlas = False
+        self.offline_queue = []
         self.setup_databases()
         
     def setup_databases(self):
-        # Setup MongoDB
-        self.connect_mongodb()
+        """Setup local MongoDB and try to connect to Atlas"""
+        # Setup local MongoDB
+        self.setup_local_mongodb()
         
-        # Setup SQLite fallback
-        self.setup_sqlite()
+        # Try to connect to Atlas
+        self.connect_atlas()
         
-    def connect_mongodb(self):
+    def setup_local_mongodb(self):
+        """Setup local MongoDB database"""
+        try:
+            # Connect to local MongoDB (default port 27017)
+            self.local_mongo_client = MongoClient('mongodb://localhost:27017/', serverSelectionTimeoutMS=2000)
+            self.local_mongo_db = self.local_mongo_client.sensor_db
+            
+            # Test connection
+            self.local_mongo_client.server_info()
+            print("✅ Local MongoDB connected")
+            
+            # Create indexes for better performance
+            self.local_mongo_db.readings.create_index([("device_id", 1), ("server_timestamp", -1)])
+            self.local_mongo_db.readings.create_index([("server_timestamp", -1)])
+            
+        except Exception as e:
+            print(f"❌ Local MongoDB setup failed: {e}")
+            print("💡 Make sure MongoDB is installed and running locally")
+            self.local_mongo_client = None
+            self.local_mongo_db = None
+            
+    def connect_atlas(self):
+        """Connect to MongoDB Atlas"""
         try:
             if app.config['MONGO_URI']:
-                self.mongo_client = MongoClient(app.config['MONGO_URI'], serverSelectionTimeoutMS=5000)
-                self.mongo_db = self.mongo_client.sensor_db
+                self.atlas_mongo_client = MongoClient(app.config['MONGO_URI'], serverSelectionTimeoutMS=5000)
+                self.atlas_mongo_db = self.atlas_mongo_client.sensor_db
+                
                 # Test connection
-                self.mongo_client.server_info()
-                self.use_mongo = True
-                print("✅ MongoDB connected")
+                self.atlas_mongo_client.server_info()
+                self.using_atlas = True
+                print("✅ MongoDB Atlas connected")
+                
+                # Sync any offline data
+                self.sync_offline_data()
                 return True
         except Exception as e:
-            print(f"❌ MongoDB connection failed: {e}")
-            self.use_mongo = False
-            self.mongo_db = None
+            print(f"⚠️ MongoDB Atlas connection failed: {e}")
+            print("📱 Operating in offline mode with local MongoDB")
+            self.using_atlas = False
+            self.atlas_mongo_client = None
+            self.atlas_mongo_db = None
             return False
             
-    def setup_sqlite(self):
+    def sync_offline_data(self):
+        """Sync offline data to Atlas when connection is restored"""
+        if not self.atlas_mongo_db or not self.local_mongo_db:
+            return
+            
         try:
-            self.sqlite_conn = sqlite3.connect('sensor_data.db', check_same_thread=False)
-            cursor = self.sqlite_conn.cursor()
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS readings (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    device_id TEXT,
-                    temperature REAL,
-                    humidity REAL,
-                    co2 INTEGER,
-                    light_intensity INTEGER,
-                    water_level REAL,
-                    timestamp TEXT,
-                    server_timestamp TEXT
+            # Get unsynced data from local MongoDB
+            unsynced_data = list(self.local_mongo_db.readings.find({
+                'synced_to_atlas': {'$ne': True}
+            }))
+            
+            if unsynced_data:
+                print(f"🔄 Syncing {len(unsynced_data)} offline records to Atlas...")
+                
+                # Insert into Atlas
+                for doc in unsynced_data:
+                    # Remove local MongoDB specific fields
+                    doc.pop('_id', None)
+                    doc.pop('synced_to_atlas', None)
+                    
+                    # Insert into Atlas
+                    self.atlas_mongo_db.readings.insert_one(doc)
+                
+                # Mark as synced in local MongoDB
+                self.local_mongo_db.readings.update_many(
+                    {'synced_to_atlas': {'$ne': True}},
+                    {'$set': {'synced_to_atlas': True}}
                 )
-            ''')
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS config (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    device_id TEXT UNIQUE,
-                    config_data TEXT,
-                    updated_at TEXT
-                )
-            ''')
-            self.sqlite_conn.commit()
-            print("✅ SQLite database initialized")
+                
+                print(f"✅ Synced {len(unsynced_data)} records to Atlas")
+                
         except Exception as e:
-            print(f"❌ SQLite setup failed: {e}")
+            print(f"❌ Sync error: {e}")
 
     def save_reading(self, data):
-        # Try MongoDB first, fallback to SQLite
-        if self.use_mongo and self.mongo_db:
-            try:
-                data['server_timestamp'] = datetime.utcnow()
-                result = self.mongo_db.readings.insert_one(data)
-                print(f"📦 Saved to MongoDB: {result.inserted_id}")
-                return result.inserted_id
-            except Exception as e:
-                print(f"📦 MongoDB save error, switching to SQLite: {e}")
-                self.use_mongo = False
+        """Save reading to local MongoDB and optionally to Atlas"""
+        try:
+            # Add timestamp
+            data['server_timestamp'] = datetime.utcnow()
+            data['device_id'] = DEVICE_ID
+            
+            # Save to local MongoDB
+            if self.local_mongo_db:
+                # Mark as not synced initially
+                data['synced_to_atlas'] = False
+                result = self.local_mongo_db.readings.insert_one(data)
+                print(f"📦 Saved to local MongoDB: {result.inserted_id}")
                 
-        # SQLite fallback
-        if self.sqlite_conn:
-            try:
-                cursor = self.sqlite_conn.cursor()
-                cursor.execute('''
-                    INSERT INTO readings (device_id, temperature, humidity, co2, light_intensity, water_level, timestamp, server_timestamp)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (
-                    data['device_id'],
-                    data['temperature'],
-                    data['humidity'],
-                    data.get('co2', 400),
-                    data.get('light_intensity', 0),
-                    data.get('water_level', 50.0),
-                    data['timestamp'],
-                    datetime.utcnow().isoformat()
-                ))
-                self.sqlite_conn.commit()
-                print(f"📦 Saved to SQLite: {cursor.lastrowid}")
-                return cursor.lastrowid
-            except Exception as e:
-                print(f"📦 SQLite save error: {e}")
+                # Try to save to Atlas if available
+                if self.using_atlas and self.atlas_mongo_db:
+                    try:
+                        # Remove local MongoDB specific fields
+                        atlas_data = data.copy()
+                        atlas_data.pop('_id', None)
+                        atlas_data.pop('synced_to_atlas', None)
+                        
+                        self.atlas_mongo_db.readings.insert_one(atlas_data)
+                        
+                        # Mark as synced in local MongoDB
+                        self.local_mongo_db.readings.update_one(
+                            {'_id': result.inserted_id},
+                            {'$set': {'synced_to_atlas': True}}
+                        )
+                        print(f"📦 Also saved to Atlas")
+                        
+                    except Exception as e:
+                        print(f"⚠️ Atlas save failed, keeping local only: {e}")
+                
+                return str(result.inserted_id)
+            else:
+                print("❌ No local MongoDB available")
                 return None
+                
+        except Exception as e:
+            print(f"❌ Save error: {e}")
+            return None
 
     def get_latest_readings(self, limit=10):
-        # Try MongoDB first, fallback to SQLite
-        if self.use_mongo and self.mongo_db:
-            try:
-                cursor = self.mongo_db.readings.find({
+        """Get latest readings from local MongoDB"""
+        try:
+            if self.local_mongo_db:
+                cursor = self.local_mongo_db.readings.find({
                     'device_id': DEVICE_ID
                 }).sort('server_timestamp', -1).limit(limit)
                 
@@ -176,40 +219,23 @@ class DatabaseService:
                         doc['server_timestamp'] = doc['server_timestamp'].isoformat()
                     readings.append(doc)
                 
-                print(f"📊 Retrieved {len(readings)} readings from MongoDB")
+                print(f"📊 Retrieved {len(readings)} readings from local MongoDB")
                 return readings
-            except Exception as e:
-                print(f"📦 MongoDB read error, switching to SQLite: {e}")
-                self.use_mongo = False
-                
-        # SQLite fallback
-        if self.sqlite_conn:
-            try:
-                cursor = self.sqlite_conn.cursor()
-                cursor.execute('''
-                    SELECT * FROM readings 
-                    WHERE device_id = ? 
-                    ORDER BY server_timestamp DESC 
-                    LIMIT ?
-                ''', (DEVICE_ID, limit))
-                
-                columns = [description[0] for description in cursor.description]
-                readings = [dict(zip(columns, row)) for row in cursor.fetchall()]
-                print(f"📊 Retrieved {len(readings)} readings from SQLite")
-                return readings
-            except Exception as e:
-                print(f"📦 SQLite read error: {e}")
+            else:
+                print("❌ No local MongoDB available")
                 return []
                 
-        return []
+        except Exception as e:
+            print(f"❌ Read error: {e}")
+            return []
 
     def get_historical_data(self, hours=24, limit=500):
-        time_threshold = datetime.utcnow() - timedelta(hours=hours)
-        
-        # Try MongoDB first, fallback to SQLite
-        if self.use_mongo and self.mongo_db:
-            try:
-                cursor = self.mongo_db.readings.find({
+        """Get historical data from local MongoDB"""
+        try:
+            time_threshold = datetime.utcnow() - timedelta(hours=hours)
+            
+            if self.local_mongo_db:
+                cursor = self.local_mongo_db.readings.find({
                     'server_timestamp': {'$gte': time_threshold},
                     'device_id': DEVICE_ID
                 }).sort('server_timestamp', -1).limit(limit)
@@ -222,28 +248,21 @@ class DatabaseService:
                     readings.append(doc)
                 
                 return readings
-            except Exception as e:
-                print(f"📦 MongoDB historical read error: {e}")
-                self.use_mongo = False
-                
-        # SQLite fallback
-        if self.sqlite_conn:
-            try:
-                cursor = self.sqlite_conn.cursor()
-                cursor.execute('''
-                    SELECT * FROM readings 
-                    WHERE device_id = ? AND server_timestamp >= ?
-                    ORDER BY server_timestamp DESC 
-                    LIMIT ?
-                ''', (DEVICE_ID, time_threshold.isoformat(), limit))
-                
-                columns = [description[0] for description in cursor.description]
-                return [dict(zip(columns, row)) for row in cursor.fetchall()]
-            except Exception as e:
-                print(f"📦 SQLite historical read error: {e}")
+            else:
                 return []
                 
-        return []
+        except Exception as e:
+            print(f"❌ Historical read error: {e}")
+            return []
+
+    def get_database_status(self):
+        """Get current database status"""
+        return {
+            'local_mongodb': self.local_mongo_db is not None,
+            'atlas_connected': self.using_atlas,
+            'database_type': 'MongoDB Atlas' if self.using_atlas else 'Local MongoDB',
+            'offline_mode': not self.using_atlas
+        }
 
 # Initialize DB service
 db_service = DatabaseService()
@@ -522,9 +541,12 @@ def get_history():
 @require_auth
 def get_status():
     control_status = gpio_control.get_control_status()
+    db_status = db_service.get_database_status()
     return jsonify({
-        'database': 'MongoDB' if db_service.use_mongo else 'SQLite',
-        'connected': db_service.use_mongo or db_service.sqlite_conn is not None,
+        'database': db_status['database_type'],
+        'connected': db_status['local_mongodb'],
+        'atlas_connected': db_status['atlas_connected'],
+        'offline_mode': db_status['offline_mode'],
         'device_id': DEVICE_ID,
         'controls': control_status
     })
@@ -577,9 +599,12 @@ def control_lights():
 def handle_connect():
     if 'authenticated' in session:
         emit('sensor_update', sensor_service.current_data)
+        db_status = db_service.get_database_status()
         emit('status_update', {
-            'database': 'MongoDB' if db_service.use_mongo else 'SQLite',
-            'connected': True
+            'database': db_status['database_type'],
+            'connected': db_status['local_mongodb'],
+            'atlas_connected': db_status['atlas_connected'],
+            'offline_mode': db_status['offline_mode']
         })
 
 @socketio.on('request_data')
@@ -600,7 +625,7 @@ def sensor_monitor():
             # Auto-control based on conditions
             auto_control_environment(sensor_data)
             
-            # Save to database (MongoDB or SQLite fallback)
+            # Save to database (local MongoDB with Atlas sync)
             db_service.save_reading(sensor_data)
             
             # Emit real-time update to connected clients
@@ -657,13 +682,13 @@ def auto_control_environment(sensor_data):
         print(f"⚠️ Auto-control error: {e}")
 
 def database_health_monitor():
-    """Monitor database connections and switch between MongoDB and SQLite"""
+    """Monitor database connections and sync with Atlas when available"""
     while True:
         try:
-            # Try to reconnect to MongoDB if we're using SQLite
-            if not db_service.use_mongo:
-                if db_service.connect_mongodb():
-                    print("🔄 Switched back to MongoDB")
+            # Try to reconnect to Atlas if not connected
+            if not db_service.using_atlas:
+                if db_service.connect_atlas():
+                    print("🔄 Reconnected to MongoDB Atlas")
                     
             time.sleep(30)  # Check every 30 seconds
             
@@ -676,7 +701,12 @@ def database_health_monitor():
 # ========================
 def main():
     print("🍄 Starting Environmental Control System")
-    print(f"📊 Database: {'MongoDB' if db_service.use_mongo else 'SQLite'}")
+    db_status = db_service.get_database_status()
+    print(f"📊 Database: {db_status['database_type']}")
+    if db_status['offline_mode']:
+        print("📱 Operating in offline mode")
+    else:
+        print("☁️ Connected to MongoDB Atlas")
     print(f"🔌 GPIO: Available")
     
     # Start background threads
