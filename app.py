@@ -1,5 +1,4 @@
 import os
-import sqlite3
 import threading
 import time
 import webbrowser
@@ -11,45 +10,36 @@ from flask import Flask, jsonify, render_template, request, redirect, url_for, s
 from flask_socketio import SocketIO, emit
 from flask_cors import CORS
 from pymongo import MongoClient
-import random
-import math
+import subprocess
+import json
 
 # Import GPIO and sensor libraries
-try:
-    import RPi.GPIO as GPIO
-    import adafruit_dht
-    import board
-    import digitalio
-    import busio
-    import adafruit_mcp3xxx.mcp3008 as MCP
-    from adafruit_mcp3xxx.analog_in import AnalogIn
-    GPIO_AVAILABLE = True
-except ImportError:
-    print("⚠️ GPIO libraries not available - running in simulation mode")
-    GPIO_AVAILABLE = False
+from gpiozero import DistanceSensor, LED, OutputDevice
+import adafruit_scd4x
+import board
+import busio
+import smbus2
+import struct
 
 # Import configuration
-from config import GPIO_CONFIG, MUSHROOM_CONFIG, GROWTH_PHASES, SENSOR_CONFIG
+from config import GPIO_CONFIG, MUSHROOM_CONFIG, SENSOR_CONFIG
 
 # Load environment variables
 load_dotenv()
 
 # Constants
-DEVICE_ID = "mushroom-control-01"
+DEVICE_ID = "raspberry-pi-01"
 SENSOR_READ_INTERVAL = SENSOR_CONFIG['read_interval']
 ALERT_THRESHOLDS = MUSHROOM_CONFIG['alert_thresholds']
 OPTIMAL_RANGES = MUSHROOM_CONFIG['optimal_ranges']
-
-# Current mushroom growth phase
-CURRENT_PHASE = 'pinning'  # Default phase
 
 # Initialize Flask
 app = Flask(__name__)
 CORS(app)
 app.config.update({
-    'SECRET_KEY': os.getenv('SECRET_KEY', 'your-secret-key-here'),
+    'SECRET_KEY': os.getenv('SECRET_KEY', 'pentaplets'),
     'MONGO_URI': os.getenv('MONGODB_URI'),
-    'DASHBOARD_PASSWORD': os.getenv('DASHBOARD_PASSWORD', 'admin123')  # Change this!
+    'DASHBOARD_PASSWORD': os.getenv('DASHBOARD_PASSWORD', 'pentaplets')
 })
 
 # Initialize SocketIO
@@ -77,108 +67,148 @@ def require_auth(f):
 # ========================
 class DatabaseService:
     def __init__(self):
-        self.mongo_client = None
-        self.mongo_db = None
-        self.sqlite_conn = None
-        self.use_mongo = True
+        self.local_mongo_client = None
+        self.local_mongo_db = None
+        self.atlas_mongo_client = None
+        self.atlas_mongo_db = None
+        self.using_atlas = False
+        self.offline_queue = []
         self.setup_databases()
         
     def setup_databases(self):
-        # Setup MongoDB
-        self.connect_mongodb()
+        """Setup local MongoDB and try to connect to Atlas"""
+        # Setup local MongoDB
+        self.setup_local_mongodb()
         
-        # Setup SQLite fallback
-        self.setup_sqlite()
+        # Try to connect to Atlas
+        self.connect_atlas()
         
-    def connect_mongodb(self):
+    def setup_local_mongodb(self):
+        """Setup local MongoDB database"""
+        try:
+            # Connect to local MongoDB (default port 27017)
+            self.local_mongo_client = MongoClient('mongodb://localhost:27017/', serverSelectionTimeoutMS=2000)
+            self.local_mongo_db = self.local_mongo_client.sensor_db
+            
+            # Test connection
+            self.local_mongo_client.server_info()
+            print("✅ Local MongoDB connected")
+            
+            # Create indexes for better performance
+            self.local_mongo_db.readings.create_index([("device_id", 1), ("server_timestamp", -1)])
+            self.local_mongo_db.readings.create_index([("server_timestamp", -1)])
+            
+        except Exception as e:
+            print(f"❌ Local MongoDB setup failed: {e}")
+            print("💡 Make sure MongoDB is installed and running locally")
+            self.local_mongo_client = None
+            self.local_mongo_db = None
+            
+    def connect_atlas(self):
+        """Connect to MongoDB Atlas"""
         try:
             if app.config['MONGO_URI']:
-                self.mongo_client = MongoClient(app.config['MONGO_URI'], serverSelectionTimeoutMS=5000)
-                self.mongo_db = self.mongo_client.sensor_db
+                self.atlas_mongo_client = MongoClient(app.config['MONGO_URI'], serverSelectionTimeoutMS=5000)
+                self.atlas_mongo_db = self.atlas_mongo_client.sensor_db
+                
                 # Test connection
-                self.mongo_client.server_info()
-                self.use_mongo = True
-                print("✅ MongoDB connected")
+                self.atlas_mongo_client.server_info()
+                self.using_atlas = True
+                print("✅ MongoDB Atlas connected")
+                
+                # Sync any offline data
+                self.sync_offline_data()
                 return True
         except Exception as e:
-            print(f"❌ MongoDB connection failed: {e}")
-            self.use_mongo = False
-            self.mongo_db = None
+            print(f"⚠️ MongoDB Atlas connection failed: {e}")
+            print("📱 Operating in offline mode with local MongoDB")
+            self.using_atlas = False
+            self.atlas_mongo_client = None
+            self.atlas_mongo_db = None
             return False
             
-    def setup_sqlite(self):
+    def sync_offline_data(self):
+        """Sync offline data to Atlas when connection is restored"""
+        if not self.atlas_mongo_db or not self.local_mongo_db:
+            return
+            
         try:
-            self.sqlite_conn = sqlite3.connect('sensor_data.db', check_same_thread=False)
-            cursor = self.sqlite_conn.cursor()
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS readings (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    device_id TEXT,
-                    temperature REAL,
-                    humidity REAL,
-                    co2 INTEGER,
-                    light_intensity INTEGER,
-                    mushroom_phase TEXT,
-                    mushroom_status TEXT,
-                    timestamp TEXT,
-                    server_timestamp TEXT
+            # Get unsynced data from local MongoDB
+            unsynced_data = list(self.local_mongo_db.readings.find({
+                'synced_to_atlas': {'$ne': True}
+            }))
+            
+            if unsynced_data:
+                print(f"🔄 Syncing {len(unsynced_data)} offline records to Atlas...")
+                
+                # Insert into Atlas
+                for doc in unsynced_data:
+                    # Remove local MongoDB specific fields
+                    doc.pop('_id', None)
+                    doc.pop('synced_to_atlas', None)
+                    
+                    # Insert into Atlas
+                    self.atlas_mongo_db.readings.insert_one(doc)
+                
+                # Mark as synced in local MongoDB
+                self.local_mongo_db.readings.update_many(
+                    {'synced_to_atlas': {'$ne': True}},
+                    {'$set': {'synced_to_atlas': True}}
                 )
-            ''')
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS config (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    device_id TEXT UNIQUE,
-                    config_data TEXT,
-                    updated_at TEXT
-                )
-            ''')
-            self.sqlite_conn.commit()
-            print("✅ SQLite database initialized")
+                
+                print(f"✅ Synced {len(unsynced_data)} records to Atlas")
+                
         except Exception as e:
-            print(f"❌ SQLite setup failed: {e}")
+            print(f"❌ Sync error: {e}")
 
     def save_reading(self, data):
-        # Try MongoDB first, fallback to SQLite
-        if self.use_mongo and self.mongo_db:
-            try:
-                data['server_timestamp'] = datetime.utcnow()
-                result = self.mongo_db.readings.insert_one(data)
-                print(f"📦 Saved to MongoDB: {result.inserted_id}")
-                return result.inserted_id
-            except Exception as e:
-                print(f"📦 MongoDB save error, switching to SQLite: {e}")
-                self.use_mongo = False
+        """Save reading to local MongoDB and optionally to Atlas"""
+        try:
+            # Add timestamp
+            data['server_timestamp'] = datetime.utcnow()
+            data['device_id'] = DEVICE_ID
+            
+            # Save to local MongoDB
+            if self.local_mongo_db:
+                # Mark as not synced initially
+                data['synced_to_atlas'] = False
+                result = self.local_mongo_db.readings.insert_one(data)
+                print(f"📦 Saved to local MongoDB: {result.inserted_id}")
                 
-        # SQLite fallback
-        if self.sqlite_conn:
-            try:
-                cursor = self.sqlite_conn.cursor()
-                cursor.execute('''
-                    INSERT INTO readings (device_id, temperature, humidity, co2, light_intensity, mushroom_phase, mushroom_status, timestamp, server_timestamp)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (
-                    data['device_id'],
-                    data['temperature'],
-                    data['humidity'],
-                    data.get('co2', 400),
-                    data.get('light_intensity', 0),
-                    data.get('mushroom_phase', 'fruiting'),
-                    data.get('mushroom_status', 'unknown'),
-                    data['timestamp'],
-                    datetime.utcnow().isoformat()
-                ))
-                self.sqlite_conn.commit()
-                print(f"📦 Saved to SQLite: {cursor.lastrowid}")
-                return cursor.lastrowid
-            except Exception as e:
-                print(f"📦 SQLite save error: {e}")
+                # Try to save to Atlas if available
+                if self.using_atlas and self.atlas_mongo_db:
+                    try:
+                        # Remove local MongoDB specific fields
+                        atlas_data = data.copy()
+                        atlas_data.pop('_id', None)
+                        atlas_data.pop('synced_to_atlas', None)
+                        
+                        self.atlas_mongo_db.readings.insert_one(atlas_data)
+                        
+                        # Mark as synced in local MongoDB
+                        self.local_mongo_db.readings.update_one(
+                            {'_id': result.inserted_id},
+                            {'$set': {'synced_to_atlas': True}}
+                        )
+                        print(f"📦 Also saved to Atlas")
+                        
+                    except Exception as e:
+                        print(f"⚠️ Atlas save failed, keeping local only: {e}")
+                
+                return str(result.inserted_id)
+            else:
+                print("❌ No local MongoDB available")
                 return None
+                
+        except Exception as e:
+            print(f"❌ Save error: {e}")
+            return None
 
     def get_latest_readings(self, limit=10):
-        # Try MongoDB first, fallback to SQLite
-        if self.use_mongo and self.mongo_db:
-            try:
-                cursor = self.mongo_db.readings.find({
+        """Get latest readings from local MongoDB"""
+        try:
+            if self.local_mongo_db:
+                cursor = self.local_mongo_db.readings.find({
                     'device_id': DEVICE_ID
                 }).sort('server_timestamp', -1).limit(limit)
                 
@@ -189,40 +219,23 @@ class DatabaseService:
                         doc['server_timestamp'] = doc['server_timestamp'].isoformat()
                     readings.append(doc)
                 
-                print(f"📊 Retrieved {len(readings)} readings from MongoDB")
+                print(f"📊 Retrieved {len(readings)} readings from local MongoDB")
                 return readings
-            except Exception as e:
-                print(f"📦 MongoDB read error, switching to SQLite: {e}")
-                self.use_mongo = False
-                
-        # SQLite fallback
-        if self.sqlite_conn:
-            try:
-                cursor = self.sqlite_conn.cursor()
-                cursor.execute('''
-                    SELECT * FROM readings 
-                    WHERE device_id = ? 
-                    ORDER BY server_timestamp DESC 
-                    LIMIT ?
-                ''', (DEVICE_ID, limit))
-                
-                columns = [description[0] for description in cursor.description]
-                readings = [dict(zip(columns, row)) for row in cursor.fetchall()]
-                print(f"📊 Retrieved {len(readings)} readings from SQLite")
-                return readings
-            except Exception as e:
-                print(f"📦 SQLite read error: {e}")
+            else:
+                print("❌ No local MongoDB available")
                 return []
                 
-        return []
+        except Exception as e:
+            print(f"❌ Read error: {e}")
+            return []
 
     def get_historical_data(self, hours=24, limit=500):
-        time_threshold = datetime.utcnow() - timedelta(hours=hours)
-        
-        # Try MongoDB first, fallback to SQLite
-        if self.use_mongo and self.mongo_db:
-            try:
-                cursor = self.mongo_db.readings.find({
+        """Get historical data from local MongoDB"""
+        try:
+            time_threshold = datetime.utcnow() - timedelta(hours=hours)
+            
+            if self.local_mongo_db:
+                cursor = self.local_mongo_db.readings.find({
                     'server_timestamp': {'$gte': time_threshold},
                     'device_id': DEVICE_ID
                 }).sort('server_timestamp', -1).limit(limit)
@@ -235,31 +248,81 @@ class DatabaseService:
                     readings.append(doc)
                 
                 return readings
-            except Exception as e:
-                print(f"📦 MongoDB historical read error: {e}")
-                self.use_mongo = False
-                
-        # SQLite fallback
-        if self.sqlite_conn:
-            try:
-                cursor = self.sqlite_conn.cursor()
-                cursor.execute('''
-                    SELECT * FROM readings 
-                    WHERE device_id = ? AND server_timestamp >= ?
-                    ORDER BY server_timestamp DESC 
-                    LIMIT ?
-                ''', (DEVICE_ID, time_threshold.isoformat(), limit))
-                
-                columns = [description[0] for description in cursor.description]
-                return [dict(zip(columns, row)) for row in cursor.fetchall()]
-            except Exception as e:
-                print(f"📦 SQLite historical read error: {e}")
+            else:
                 return []
                 
-        return []
+        except Exception as e:
+            print(f"❌ Historical read error: {e}")
+            return []
+
+    def get_database_status(self):
+        """Get current database status"""
+        return {
+            'local_mongodb': self.local_mongo_db is not None,
+            'atlas_connected': self.using_atlas,
+            'database_type': 'MongoDB Atlas' if self.using_atlas else 'Local MongoDB',
+            'offline_mode': not self.using_atlas
+        }
 
 # Initialize DB service
 db_service = DatabaseService()
+
+# ========================
+# BH1750 LIGHT SENSOR CLASS
+# ========================
+class BH1750:
+    """BH1750 Light Sensor Driver"""
+    
+    # Device I2C address
+    DEVICE_ADDRESS = 0x23  # Default address (ADDR pin = LOW)
+    # DEVICE_ADDRESS = 0x5C  # Alternative address (ADDR pin = HIGH)
+    
+    # Measurement modes
+    CONTINUOUS_HIGH_RES_MODE = 0x10
+    CONTINUOUS_HIGH_RES_MODE_2 = 0x11
+    CONTINUOUS_LOW_RES_MODE = 0x13
+    ONE_TIME_HIGH_RES_MODE = 0x20
+    ONE_TIME_HIGH_RES_MODE_2 = 0x21
+    ONE_TIME_LOW_RES_MODE = 0x23
+    
+    def __init__(self, bus_number=1):
+        """Initialize BH1750 sensor"""
+        try:
+            self.bus = smbus2.SMBus(bus_number)
+            self.address = self.DEVICE_ADDRESS
+            print(f"✅ BH1750 initialized on I2C bus {bus_number}, address 0x{self.address:02X}")
+        except Exception as e:
+            print(f"❌ BH1750 initialization failed: {e}")
+            self.bus = None
+    
+    def read_light_level(self):
+        """Read light level in lux"""
+        try:
+            if not self.bus:
+                return None
+            
+            # Send measurement command (one-time high resolution mode)
+            self.bus.write_byte(self.address, self.ONE_TIME_HIGH_RES_MODE)
+            
+            # Wait for measurement (max 180ms)
+            time.sleep(0.2)
+            
+            # Read 2 bytes of data
+            data = self.bus.read_i2c_block_data(self.address, 0x00, 2)
+            
+            # Convert to lux
+            light_level = (data[0] << 8 | data[1]) / 1.2
+            
+            return round(light_level, 1)
+            
+        except Exception as e:
+            print(f"❌ BH1750 read error: {e}")
+            return None
+    
+    def close(self):
+        """Close I2C bus"""
+        if self.bus:
+            self.bus.close()
 
 # ========================
 # GPIO CONTROL SERVICE
@@ -270,52 +333,42 @@ class GPIOControlService:
         self.fan_speed = 0
         self.heater_active = False
         self.lights_active = False
-        
-        if GPIO_AVAILABLE:
-            self.setup_gpio()
+        self.setup_gpio()
         
     def setup_gpio(self):
-        """Initialize GPIO pins"""
+        """Initialize GPIO pins using GPIO Zero"""
         try:
-            GPIO.setmode(GPIO.BCM)
-            GPIO.setwarnings(False)
+            # Setup control devices using GPIO Zero
+            self.fogger = OutputDevice(GPIO_CONFIG['FOGGER_PIN'])
+            self.fan = OutputDevice(GPIO_CONFIG['FAN_PIN'])
+            self.heater = OutputDevice(GPIO_CONFIG['HEATER_PIN'])
+            self.lights = OutputDevice(GPIO_CONFIG['LED_LIGHTS_PIN'])
             
-            # Setup control pins as outputs
-            GPIO.setup(GPIO_CONFIG['FOGGER_PIN'], GPIO.OUT)
-            GPIO.setup(GPIO_CONFIG['FAN_PIN'], GPIO.OUT)
-            GPIO.setup(GPIO_CONFIG['HEATER_PIN'], GPIO.OUT)
-            GPIO.setup(GPIO_CONFIG['LED_LIGHTS_PIN'], GPIO.OUT)
-            
-            # Setup status LED pins
-            GPIO.setup(GPIO_CONFIG['STATUS_LED_GREEN'], GPIO.OUT)
-            GPIO.setup(GPIO_CONFIG['STATUS_LED_RED'], GPIO.OUT)
-            GPIO.setup(GPIO_CONFIG['STATUS_LED_BLUE'], GPIO.OUT)
+            # Setup status LEDs
+            self.status_led_green = LED(GPIO_CONFIG['STATUS_LED_GREEN'])
+            self.status_led_red = LED(GPIO_CONFIG['STATUS_LED_RED'])
+            self.status_led_blue = LED(GPIO_CONFIG['STATUS_LED_BLUE'])
             
             # Initialize all outputs to OFF
-            GPIO.output(GPIO_CONFIG['FOGGER_PIN'], GPIO.LOW)
-            GPIO.output(GPIO_CONFIG['FAN_PIN'], GPIO.LOW)
-            GPIO.output(GPIO_CONFIG['HEATER_PIN'], GPIO.LOW)
-            GPIO.output(GPIO_CONFIG['LED_LIGHTS_PIN'], GPIO.LOW)
+            self.fogger.off()
+            self.fan.off()
+            self.heater.off()
+            self.lights.off()
             
             # Set status LED to green (system OK)
-            GPIO.output(GPIO_CONFIG['STATUS_LED_GREEN'], GPIO.HIGH)
-            GPIO.output(GPIO_CONFIG['STATUS_LED_RED'], GPIO.LOW)
-            GPIO.output(GPIO_CONFIG['STATUS_LED_BLUE'], GPIO.LOW)
+            self.status_led_green.on()
+            self.status_led_red.off()
+            self.status_led_blue.off()
             
-            print("✅ GPIO initialized successfully")
+            print("✅ GPIO Zero devices initialized successfully")
         except Exception as e:
             print(f"❌ GPIO setup error: {e}")
     
     def control_fogger(self, activate=True, duration=None):
         """Control the fogger"""
-        if not GPIO_AVAILABLE:
-            print(f"🌫️ Fogger {'ON' if activate else 'OFF'} (simulation)")
-            self.fogger_active = activate
-            return
-            
         try:
             if activate:
-                GPIO.output(GPIO_CONFIG['FOGGER_PIN'], GPIO.HIGH)
+                self.fogger.on()
                 self.fogger_active = True
                 print("🌫️ Fogger activated")
                 
@@ -323,7 +376,7 @@ class GPIOControlService:
                     # Auto-turn off after duration
                     threading.Timer(duration, self.control_fogger, [False]).start()
             else:
-                GPIO.output(GPIO_CONFIG['FOGGER_PIN'], GPIO.LOW)
+                self.fogger.off()
                 self.fogger_active = False
                 print("🌫️ Fogger deactivated")
         except Exception as e:
@@ -331,19 +384,11 @@ class GPIOControlService:
     
     def control_fan(self, speed_percent=0):
         """Control exhaust fan speed (0-100%)"""
-        if not GPIO_AVAILABLE:
-            print(f"🌬️ Fan speed: {speed_percent}% (simulation)")
-            self.fan_speed = speed_percent
-            return
-            
         try:
             if speed_percent > 0:
-                GPIO.output(GPIO_CONFIG['FAN_PIN'], GPIO.HIGH)
-                # In real implementation, you'd use PWM for speed control
-                # pwm = GPIO.PWM(GPIO_CONFIG['FAN_PIN'], 1000)
-                # pwm.start(speed_percent)
+                self.fan.on()
             else:
-                GPIO.output(GPIO_CONFIG['FAN_PIN'], GPIO.LOW)
+                self.fan.off()
             
             self.fan_speed = speed_percent
             print(f"🌬️ Fan speed set to {speed_percent}%")
@@ -352,13 +397,11 @@ class GPIOControlService:
     
     def control_lights(self, activate=True):
         """Control LED grow lights"""
-        if not GPIO_AVAILABLE:
-            print(f"💡 Lights {'ON' if activate else 'OFF'} (simulation)")
-            self.lights_active = activate
-            return
-            
         try:
-            GPIO.output(GPIO_CONFIG['LED_LIGHTS_PIN'], GPIO.HIGH if activate else GPIO.LOW)
+            if activate:
+                self.lights.on()
+            else:
+                self.lights.off()
             self.lights_active = activate
             print(f"💡 Lights {'activated' if activate else 'deactivated'}")
         except Exception as e:
@@ -378,160 +421,126 @@ class GPIOControlService:
 # ========================
 class SensorService:
     def __init__(self):
-        self.simulation_time = 0
         self.current_data = {
             'temperature': 0,
             'humidity': 0,
             'co2': 400,
             'light_intensity': 0,
+            'water_level': 50.0,
             'timestamp': datetime.utcnow().isoformat(),
-            'device_id': DEVICE_ID,
-            'mushroom_phase': CURRENT_PHASE,
-            'mushroom_status': 'healthy'
+            'device_id': DEVICE_ID
         }
-        
-        if GPIO_AVAILABLE:
-            self.setup_sensors()
+        self.setup_sensors()
         
     def setup_sensors(self):
         """Initialize sensors"""
         try:
-            # DHT22 temperature/humidity sensor
-            self.dht = adafruit_dht.DHT22(getattr(board, f'D{GPIO_CONFIG["DHT22_PIN"]}'))
+            # I2C setup for SCD40 sensor (pins 3=SDA, 5=SCL)
+            i2c = busio.I2C(board.SCL, board.SDA)
+            self.scd40 = adafruit_scd4x.SCD4X(i2c)
+            print("🔄 Starting SCD40 periodic measurement...")
+            self.scd40.start_periodic_measurement()
             
-            # SPI setup for MCP3008 ADC
-            spi = busio.SPI(clock=getattr(board, f'D{GPIO_CONFIG["SPI_CLK"]}'),
-                          MISO=getattr(board, f'D{GPIO_CONFIG["SPI_MISO"]}'),
-                          MOSI=getattr(board, f'D{GPIO_CONFIG["SPI_MOSI"]}'))
-            cs = digitalio.DigitalInOut(getattr(board, f'D{GPIO_CONFIG["SPI_CS"]}'))
+            # BH1750 light sensor (I2C)
+            self.bh1750 = BH1750(bus_number=1)
             
-            self.mcp = MCP.MCP3008(spi, cs)
-            self.light_sensor = AnalogIn(self.mcp, MCP.P0)  # Channel 0 for light
-            self.co2_sensor = AnalogIn(self.mcp, MCP.P1)    # Channel 1 for CO2
+            # Setup ultrasonic sensor using GPIO Zero
+            self.water_sensor = DistanceSensor(
+                echo=GPIO_CONFIG['ULTRASONIC_ECHO_PIN'], 
+                trigger=GPIO_CONFIG['ULTRASONIC_TRIG_PIN'],
+                max_distance=1  # 1 meter max range
+            )
             
             print("✅ Sensors initialized successfully")
+            print("  - SCD40 (Temperature, Humidity, CO2) on I2C")
+            print("  - BH1750 (Light Intensity) on I2C")
+            print("  - Ultrasonic water level sensor (GPIO Zero)")
         except Exception as e:
             print(f"❌ Sensor setup error: {e}")
-            self.dht = None
-            self.mcp = None
+            self.scd40 = None
+            self.bh1750 = None
+            self.water_sensor = None
     
-    def read_real_sensors(self):
+    def read_ultrasonic_distance(self):
+        """Read distance from ultrasonic sensor in cm using GPIO Zero"""
+        try:
+            if hasattr(self, 'water_sensor') and self.water_sensor:
+                # GPIO Zero DistanceSensor returns distance in meters
+                distance_m = self.water_sensor.distance
+                distance_cm = distance_m * 100  # Convert to centimeters
+                return round(distance_cm, 2)
+            else:
+                return None
+        except Exception as e:
+            print(f"❌ Ultrasonic sensor error: {e}")
+            return None
+    
+    def calculate_water_level_percentage(self, distance_cm):
+        """Convert ultrasonic distance to water level percentage"""
+        if distance_cm is None:
+            return 50.0  # Default value if sensor fails
+        
+        reservoir_config = SENSOR_CONFIG['reservoir_config']
+        sensor_height = reservoir_config['sensor_height_cm']
+        max_depth = reservoir_config['max_depth_cm']
+        min_depth = reservoir_config['min_depth_cm']
+        
+        # Calculate water depth
+        water_depth = sensor_height - distance_cm
+        
+        # Clamp to valid range
+        water_depth = max(0, min(max_depth, water_depth))
+        
+        # Convert to percentage (0% = empty, 100% = full)
+        if water_depth <= min_depth:
+            return 0.0
+        else:
+            percentage = ((water_depth - min_depth) / (max_depth - min_depth)) * 100
+            return round(percentage, 1)
+    
+    def read_sensors(self):
         """Read data from actual GPIO sensors"""
         data = self.current_data.copy()
         
         try:
-            # Read DHT22 (temperature & humidity)
-            if hasattr(self, 'dht') and self.dht:
-                temp = self.dht.temperature
-                humidity = self.dht.humidity
-                
-                if temp is not None and humidity is not None:
-                    data['temperature'] = round(temp + SENSOR_CONFIG['calibration_offsets']['temperature'], 1)
-                    data['humidity'] = round(humidity + SENSOR_CONFIG['calibration_offsets']['humidity'], 1)
+            # Read SCD40 (temperature, humidity, CO2)
+            if hasattr(self, 'scd40') and self.scd40:
+                if self.scd40.data_ready:
+                    temp = self.scd40.temperature
+                    humidity = self.scd40.relative_humidity
+                    co2 = self.scd40.CO2
+                    
+                    if temp is not None and humidity is not None and co2 is not None:
+                        data['temperature'] = round(temp + SENSOR_CONFIG['calibration_offsets']['temperature'], 1)
+                        data['humidity'] = round(humidity + SENSOR_CONFIG['calibration_offsets']['humidity'], 1)
+                        data['co2'] = int(co2 + SENSOR_CONFIG['calibration_offsets']['co2'])
+                        print(f"📡 SCD40 readings: T={temp:.1f}°C, H={humidity:.1f}%, CO2={co2}ppm")
             
-            # Read light sensor (photoresistor via ADC)
-            if hasattr(self, 'light_sensor') and self.light_sensor:
-                light_voltage = self.light_sensor.voltage
-                # Convert voltage to light intensity (0-1000 range)
-                light_intensity = int((light_voltage / 3.3) * 1000)
-                data['light_intensity'] = light_intensity + SENSOR_CONFIG['calibration_offsets']['light_intensity']
+            # Read BH1750 light sensor
+            if hasattr(self, 'bh1750') and self.bh1750:
+                light_lux = self.bh1750.read_light_level()
+                if light_lux is not None:
+                    data['light_intensity'] = int(light_lux + SENSOR_CONFIG['calibration_offsets']['light_intensity'])
+                    print(f"💡 BH1750 light reading: {light_lux:.1f} lux")
             
-            # Read CO2 sensor (MQ-135 or similar via ADC)
-            if hasattr(self, 'co2_sensor') and self.co2_sensor:
-                co2_voltage = self.co2_sensor.voltage
-                # Convert voltage to CO2 ppm (simplified conversion)
-                co2_ppm = int(400 + (co2_voltage / 3.3) * 1000)
-                data['co2'] = co2_ppm + SENSOR_CONFIG['calibration_offsets']['co2']
+            # Read water level via ultrasonic sensor
+            distance = self.read_ultrasonic_distance()
+            if distance is not None:
+                water_level = self.calculate_water_level_percentage(distance)
+                data['water_level'] = water_level + SENSOR_CONFIG['calibration_offsets']['water_level']
+                print(f"💧 Water level: {distance:.1f}cm distance = {water_level:.1f}%")
+            
+            # Update timestamp
+            data['timestamp'] = datetime.utcnow().isoformat()
             
         except Exception as e:
             print(f"❌ Sensor reading error: {e}")
         
         return data
     
-    def simulate_realistic_data(self):
-        """Create realistic sensor simulation for mushroom growing"""
-        self.simulation_time += SENSOR_READ_INTERVAL
-        
-        # Get optimal ranges for current phase
-        phase_config = GROWTH_PHASES.get(CURRENT_PHASE, GROWTH_PHASES['fruiting'])
-        
-        # Temperature simulation based on mushroom growth phase
-        temp_min, temp_max = phase_config['temp_range']
-        temp_base = (temp_min + temp_max) / 2
-        temp_variation = random.uniform(-1.0, 1.0)
-        temperature = temp_base + temp_variation
-        
-        # Humidity simulation based on mushroom growth phase
-        humidity_min, humidity_max = phase_config['humidity_range']
-        humidity_base = (humidity_min + humidity_max) / 2
-        humidity_variation = random.uniform(-5, 5)
-        humidity = max(50, min(98, humidity_base + humidity_variation))
-        
-        # CO2 simulation
-        co2_base = random.choice([800, 900, 1000, 1100])
-        co2_variation = random.uniform(-100, 150)
-        co2 = max(400, co2_base + co2_variation)
-        
-        # Light intensity simulation
-        hour = datetime.now().hour
-        if phase_config['light_needed'] and 6 <= hour <= 18:
-            light_base = 500
-            light_variation = random.uniform(-100, 100)
-        else:
-            light_base = 50
-            light_variation = random.uniform(-20, 20)
-        light_intensity = max(0, light_base + light_variation)
-        
-        # Determine mushroom status based on conditions
-        mushroom_status = self.determine_mushroom_status(temperature, humidity, co2, light_intensity)
-        
-        self.current_data = {
-            'temperature': round(temperature, 1),
-            'humidity': round(humidity, 1),
-            'co2': int(co2),
-            'light_intensity': int(light_intensity),
-            'timestamp': datetime.utcnow().isoformat(),
-            'device_id': DEVICE_ID,
-            'mushroom_phase': CURRENT_PHASE,
-            'mushroom_status': mushroom_status
-        }
-        
-        return self.current_data
-    
-    def determine_mushroom_status(self, temp, humidity, co2, light):
-        """Determine mushroom health status based on environmental conditions"""
-        phase_config = GROWTH_PHASES.get(CURRENT_PHASE, GROWTH_PHASES['fruiting'])
-        
-        # Check if conditions are within optimal ranges
-        temp_min, temp_max = phase_config['temp_range']
-        humidity_min, humidity_max = phase_config['humidity_range']
-        
-        issues = []
-        
-        if temp < temp_min - 2 or temp > temp_max + 2:
-            issues.append('temperature')
-        if humidity < humidity_min - 10 or humidity > humidity_max + 5:
-            issues.append('humidity')
-        if co2 < 600 or co2 > 1500:
-            issues.append('co2')
-        if phase_config['light_needed'] and light < 200:
-            issues.append('light')
-        
-        if not issues:
-            return 'optimal'
-        elif len(issues) == 1:
-            return 'good'
-        elif len(issues) == 2:
-            return 'warning'
-        else:
-            return 'critical'
-    
     def get_sensor_data(self):
-        """Get current sensor data (real or simulated)"""
-        if GPIO_AVAILABLE and hasattr(self, 'dht'):
-            return self.read_real_sensors()
-        else:
-            return self.simulate_realistic_data()
+        """Get current sensor data"""
+        return self.read_sensors()
 
 # Initialize services
 sensor_service = SensorService()
@@ -583,13 +592,14 @@ def get_history():
 @require_auth
 def get_status():
     control_status = gpio_control.get_control_status()
+    db_status = db_service.get_database_status()
     return jsonify({
-        'database': 'MongoDB' if db_service.use_mongo else 'SQLite',
-        'connected': db_service.use_mongo or db_service.sqlite_conn is not None,
+        'database': db_status['database_type'],
+        'connected': db_status['local_mongodb'],
+        'atlas_connected': db_status['atlas_connected'],
+        'offline_mode': db_status['offline_mode'],
         'device_id': DEVICE_ID,
-        'mushroom_phase': CURRENT_PHASE,
-        'controls': control_status,
-        'gpio_available': GPIO_AVAILABLE
+        'controls': control_status
     })
 
 @app.route('/api/control/fogger', methods=['POST'])
@@ -635,35 +645,17 @@ def control_lights():
         'message': f"Lights {'activated' if activate else 'deactivated'}"
     })
 
-@app.route('/api/phase', methods=['POST'])
-@require_auth
-def set_mushroom_phase():
-    global CURRENT_PHASE
-    data = request.get_json()
-    new_phase = data.get('phase')
-    
-    if new_phase in GROWTH_PHASES:
-        CURRENT_PHASE = new_phase
-        return jsonify({
-            'success': True,
-            'current_phase': CURRENT_PHASE,
-            'phase_config': GROWTH_PHASES[CURRENT_PHASE],
-            'message': f"Mushroom phase set to {GROWTH_PHASES[CURRENT_PHASE]['name']}"
-        })
-    else:
-        return jsonify({
-            'success': False,
-            'message': 'Invalid phase specified'
-        }), 400
-
 # SocketIO Handlers
 @socketio.on('connect')
 def handle_connect():
     if 'authenticated' in session:
         emit('sensor_update', sensor_service.current_data)
+        db_status = db_service.get_database_status()
         emit('status_update', {
-            'database': 'MongoDB' if db_service.use_mongo else 'SQLite',
-            'connected': True
+            'database': db_status['database_type'],
+            'connected': db_status['local_mongodb'],
+            'atlas_connected': db_status['atlas_connected'],
+            'offline_mode': db_status['offline_mode']
         })
 
 @socketio.on('request_data')
@@ -678,13 +670,13 @@ def sensor_monitor():
     """Background task to read sensor data and save to database"""
     while True:
         try:
-            # Get sensor data (real or simulated)
+            # Get sensor data
             sensor_data = sensor_service.get_sensor_data()
             
             # Auto-control based on conditions
             auto_control_environment(sensor_data)
             
-            # Save to database (MongoDB or SQLite fallback)
+            # Save to database (local MongoDB with Atlas sync)
             db_service.save_reading(sensor_data)
             
             # Emit real-time update to connected clients
@@ -696,9 +688,7 @@ def sensor_monitor():
             socketio.emit('sensor_update', update_data)
             
             # Log current values
-            status_emoji = {'optimal': '🟢', 'good': '🟡', 'warning': '🟠', 'critical': '🔴'}
-            emoji = status_emoji.get(sensor_data['mushroom_status'], '⚪')
-            print(f"📊 {emoji} T: {sensor_data['temperature']}°C, H: {sensor_data['humidity']}%, CO2: {sensor_data['co2']}ppm, Light: {sensor_data['light_intensity']}, Status: {sensor_data['mushroom_status']}")
+            print(f"📊 T: {sensor_data['temperature']}°C, H: {sensor_data['humidity']}%, CO2: {sensor_data['co2']}ppm, Light: {sensor_data['light_intensity']} lux, Water: {sensor_data['water_level']}%")
             
             time.sleep(SENSOR_READ_INTERVAL)
             
@@ -709,13 +699,20 @@ def sensor_monitor():
 def auto_control_environment(sensor_data):
     """Automatically control environment based on sensor readings"""
     try:
-        phase_config = GROWTH_PHASES.get(CURRENT_PHASE, GROWTH_PHASES['fruiting'])
         temp = sensor_data['temperature']
         humidity = sensor_data['humidity']
+        water_level = sensor_data.get('water_level', 50.0)
         
-        # Auto-fogger control based on humidity
-        humidity_min, humidity_max = phase_config['humidity_range']
-        if humidity < humidity_min - 5 and not gpio_control.fogger_active:
+        # Check water level first - disable fogger if water is too low
+        if water_level < 15:
+            if gpio_control.fogger_active:
+                gpio_control.control_fogger(False)
+                print("🚨 Low water level detected - Fogger disabled!")
+        
+        # Auto-fogger control based on humidity (only if water level is sufficient)
+        humidity_min = OPTIMAL_RANGES['humidity']['min']
+        humidity_max = OPTIMAL_RANGES['humidity']['max']
+        if (humidity < humidity_min - 5 and not gpio_control.fogger_active and water_level > 20):
             gpio_control.control_fogger(True, MUSHROOM_CONFIG['control_settings']['fogger_duration'])
         
         # Auto-fan control based on humidity (too high)
@@ -724,11 +721,10 @@ def auto_control_environment(sensor_data):
         elif humidity <= humidity_max and gpio_control.fan_speed > 0:
             gpio_control.control_fan(0)
         
-        # Auto-light control based on time and growth phase
+        # Auto-light control based on time
         current_hour = datetime.now().hour
         light_schedule = MUSHROOM_CONFIG['control_settings']['light_schedule']
-        should_lights_be_on = (phase_config['light_needed'] and 
-                              light_schedule['on_hour'] <= current_hour < light_schedule['off_hour'])
+        should_lights_be_on = (light_schedule['on_hour'] <= current_hour < light_schedule['off_hour'])
         
         if should_lights_be_on != gpio_control.lights_active:
             gpio_control.control_lights(should_lights_be_on)
@@ -737,13 +733,13 @@ def auto_control_environment(sensor_data):
         print(f"⚠️ Auto-control error: {e}")
 
 def database_health_monitor():
-    """Monitor database connections and switch between MongoDB and SQLite"""
+    """Monitor database connections and sync with Atlas when available"""
     while True:
         try:
-            # Try to reconnect to MongoDB if we're using SQLite
-            if not db_service.use_mongo:
-                if db_service.connect_mongodb():
-                    print("🔄 Switched back to MongoDB")
+            # Try to reconnect to Atlas if not connected
+            if not db_service.using_atlas:
+                if db_service.connect_atlas():
+                    print("🔄 Reconnected to MongoDB Atlas")
                     
             time.sleep(30)  # Check every 30 seconds
             
@@ -755,10 +751,14 @@ def database_health_monitor():
 # MAIN APPLICATION
 # ========================
 def main():
-    print("🍄 Starting Mushroom Environmental Control System")
-    print(f"📊 Database: {'MongoDB' if db_service.use_mongo else 'SQLite'}")
-    print(f"🔌 GPIO: {'Available' if GPIO_AVAILABLE else 'Simulation Mode'}")
-    print(f"🌱 Current Phase: {GROWTH_PHASES[CURRENT_PHASE]['name']}")
+    print("🍄 Starting Environmental Control System")
+    db_status = db_service.get_database_status()
+    print(f"📊 Database: {db_status['database_type']}")
+    if db_status['offline_mode']:
+        print("📱 Operating in offline mode")
+    else:
+        print("☁️ Connected to MongoDB Atlas")
+    print(f"🔌 GPIO: Available")
     
     # Start background threads
     threading.Thread(target=sensor_monitor, daemon=True).start()
@@ -779,12 +779,10 @@ def main():
         socketio.run(app, host='0.0.0.0', port=5000, debug=False, use_reloader=False)
     except KeyboardInterrupt:
         print("🛑 Server stopped")
-        if GPIO_AVAILABLE:
-            GPIO.cleanup()
+        print("🧹 GPIO Zero will automatically cleanup")
     except Exception as e:
         print(f"❌ Server error: {e}")
-        if GPIO_AVAILABLE:
-            GPIO.cleanup()
+        print("🧹 GPIO Zero will automatically cleanup")
 
 if __name__ == '__main__':
     main()

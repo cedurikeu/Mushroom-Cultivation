@@ -50,6 +50,23 @@
             gap: 0.5rem;
         }
 
+        .atlas-indicator {
+            margin-left: 1rem;
+            padding: 0.25rem 0.5rem;
+            border-radius: 4px;
+            font-size: 0.8rem;
+        }
+
+        .atlas-connected {
+            background: rgba(39, 174, 96, 0.2);
+            color: #27ae60;
+        }
+
+        .atlas-offline {
+            background: rgba(231, 76, 60, 0.2);
+            color: #e74c3c;
+        }
+
         .status-online {
             background: #d4edda;
             color: #155724;
@@ -125,20 +142,9 @@
         .humidity .sensor-value { color: #3498db; }
         .co2 .sensor-value { color: #f39c12; }
         .light .sensor-value { color: #9b59b6; }
+        .water .sensor-value { color: #17a2b8; }
 
-        .mushroom-status {
-            background: rgba(255, 255, 255, 0.95);
-            padding: 2rem;
-            border-radius: 15px;
-            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.1);
-            margin-bottom: 2rem;
-            text-align: center;
-        }
 
-        .status-optimal { border-left: 5px solid #27ae60; }
-        .status-good { border-left: 5px solid #f1c40f; }
-        .status-warning { border-left: 5px solid #f39c12; }
-        .status-critical { border-left: 5px solid #e74c3c; }
 
         .controls-section {
             background: rgba(255, 255, 255, 0.95);
@@ -187,16 +193,7 @@
         .fan-btn { background: #e67e22; color: white; }
         .lights-btn { background: #f1c40f; color: #333; }
 
-        .phase-selector {
-            margin: 1rem 0;
-        }
 
-        .phase-selector select {
-            padding: 0.5rem;
-            border-radius: 5px;
-            border: 1px solid #ddd;
-            font-size: 1rem;
-        }
 
         .chart-container {
             background: rgba(255, 255, 255, 0.95);
@@ -280,9 +277,7 @@
             </div>
             <div id="db-status" class="status-indicator">
                 <span>📊 Database: <span id="db-type">Loading...</span></span>
-            </div>
-            <div id="phase-status" class="status-indicator">
-                <span>🍄 Phase: <span id="current-phase">Loading...</span></span>
+                <span id="atlas-status" class="atlas-indicator">☁️ Atlas: <span id="atlas-status-text">Loading...</span></span>
             </div>
             <a href="/logout" class="logout-btn">🚪 Logout</a>
         </div>
@@ -318,6 +313,13 @@
                 <div class="sensor-value" id="light-value">--</div>
                 <div class="sensor-unit">lux</div>
             </div>
+
+            <div class="sensor-card water">
+                <div class="sensor-icon">💧</div>
+                <div class="sensor-title">Water Level</div>
+                <div class="sensor-value" id="water-value">--</div>
+                <div class="sensor-unit">%</div>
+            </div>
         </div>
 
         <!-- Chart -->
@@ -326,21 +328,7 @@
             <canvas id="sensorChart" width="400" height="200"></canvas>
         </div>
 
-        <!-- Mushroom Status -->
-        <div class="mushroom-status" id="mushroom-status">
-            <h2>🍄 Mushroom Status: <span id="status-text">Loading...</span></h2>
-            <p>Growth Phase: <span id="growth-phase">--</span></p>
-            <div class="phase-selector">
-                <label>Change Growth Phase: </label>
-                <select id="phase-select">
-                    <option value="inoculation">Inoculation</option>
-                    <option value="colonization">Colonization</option>
-                    <option value="pinning">Pin Formation</option>
-                    <option value="fruiting">Fruiting</option>
-                </select>
-                <button onclick="changePhase()" class="control-btn">Update Phase</button>
-            </div>
-        </div>
+
 
         <!-- Environmental Controls -->
         <div class="controls-section">
@@ -369,13 +357,12 @@
                         <th>Humidity (%)</th>
                         <th>CO2 (ppm)</th>
                         <th>Light</th>
-                        <th>Status</th>
-                        <th>Phase</th>
+                        <th>Water (%)</th>
                     </tr>
                 </thead>
                 <tbody id="readings-table">
                     <tr>
-                        <td colspan="7" class="loading">Loading recent readings...</td>
+                        <td colspan="6" class="loading">Loading recent readings...</td>
                     </tr>
                 </tbody>
             </table>
@@ -436,6 +423,14 @@
                             backgroundColor: 'rgba(155, 89, 182, 0.1)',
                             tension: 0.4,
                             yAxisID: 'y3'
+                        },
+                        {
+                            label: 'Water Level (%)',
+                            data: [],
+                            borderColor: '#17a2b8',
+                            backgroundColor: 'rgba(23, 162, 184, 0.1)',
+                            tension: 0.4,
+                            yAxisID: 'y4'
                         }
                     ]
                 },
@@ -483,6 +478,11 @@
                             type: 'linear',
                             display: false,
                             position: 'right',
+                        },
+                        y4: {
+                            type: 'linear',
+                            display: false,
+                            position: 'right',
                         }
                     }
                 }
@@ -495,20 +495,25 @@
             document.getElementById('humidity-value').textContent = data.humidity || '--';
             document.getElementById('co2-value').textContent = data.co2 || '--';
             document.getElementById('light-value').textContent = data.light_intensity || '--';
+            document.getElementById('water-value').textContent = data.water_level || '--';
             document.getElementById('last-updated').textContent = new Date().toLocaleString();
             
-            // Update mushroom status
-            if (data.mushroom_status) {
-                const statusElement = document.getElementById('mushroom-status');
-                const statusText = document.getElementById('status-text');
-                const phaseText = document.getElementById('growth-phase');
-                
-                statusText.textContent = data.mushroom_status.toUpperCase();
-                phaseText.textContent = data.mushroom_phase || '--';
-                
-                // Update status styling
-                statusElement.className = 'mushroom-status status-' + data.mushroom_status;
+            // Update water level styling based on level
+            const waterCard = document.querySelector('.sensor-card.water');
+            const waterLevel = parseFloat(data.water_level) || 0;
+            
+            if (waterLevel < 15) {
+                waterCard.style.borderLeft = '5px solid #e74c3c';  // Red for critical
+                waterCard.style.backgroundColor = 'rgba(231, 76, 60, 0.1)';
+            } else if (waterLevel < 30) {
+                waterCard.style.borderLeft = '5px solid #f39c12';  // Orange for warning
+                waterCard.style.backgroundColor = 'rgba(243, 156, 18, 0.1)';
+            } else {
+                waterCard.style.borderLeft = '5px solid #27ae60';  // Green for good
+                waterCard.style.backgroundColor = 'rgba(255, 255, 255, 0.95)';
             }
+            
+
             
             // Update controls if provided
             if (data.controls) {
@@ -564,6 +569,7 @@
             chart.data.datasets[1].data.push(data.humidity);
             chart.data.datasets[2].data.push(data.co2);
             chart.data.datasets[3].data.push(data.light_intensity || 0);
+            chart.data.datasets[4].data.push(data.water_level || 50);
             
             // Keep only last 20 points for real-time view
             if (chart.data.labels.length > 20) {
@@ -572,6 +578,7 @@
                 chart.data.datasets[1].data.shift();
                 chart.data.datasets[2].data.shift();
                 chart.data.datasets[3].data.shift();
+                chart.data.datasets[4].data.shift();
             }
             
             chart.update('none');
@@ -591,12 +598,14 @@
                     const humidity = data.slice(-20).map(reading => reading.humidity);
                     const co2 = data.slice(-20).map(reading => reading.co2 || 400);
                     const light = data.slice(-20).map(reading => reading.light_intensity || 0);
+                    const water = data.slice(-20).map(reading => reading.water_level || 50);
                     
                     chart.data.labels = labels;
                     chart.data.datasets[0].data = temps;
                     chart.data.datasets[1].data = humidity;
                     chart.data.datasets[2].data = co2;
                     chart.data.datasets[3].data = light;
+                    chart.data.datasets[4].data = water;
                     chart.update();
                 })
                 .catch(error => console.error('Error loading historical data:', error));
@@ -611,7 +620,7 @@
                     tbody.innerHTML = '';
                     
                     if (data.length === 0) {
-                        tbody.innerHTML = '<tr><td colspan="7" class="loading">No recent readings available</td></tr>';
+                        tbody.innerHTML = '<tr><td colspan="8" class="loading">No recent readings available</td></tr>';
                         return;
                     }
                     
@@ -626,8 +635,7 @@
                             <td>${reading.humidity}%</td>
                             <td>${reading.co2 || 'N/A'} ppm</td>
                             <td>${reading.light_intensity || 'N/A'}</td>
-                            <td>${reading.mushroom_status || 'Unknown'}</td>
-                            <td>${reading.mushroom_phase || 'Unknown'}</td>
+                            <td>${reading.water_level || 'N/A'}%</td>
                         `;
                         tbody.appendChild(row);
                     });
@@ -635,7 +643,7 @@
                 .catch(error => {
                     console.error('Error loading recent readings:', error);
                     document.getElementById('readings-table').innerHTML = 
-                        '<tr><td colspan="7" class="loading">Error loading readings</td></tr>';
+                        '<tr><td colspan="6" class="loading">Error loading readings</td></tr>';
                 });
         }
 
@@ -662,9 +670,17 @@
 
         socket.on('status_update', function(data) {
             document.getElementById('db-type').textContent = data.database;
-            if (data.mushroom_phase) {
-                document.getElementById('current-phase').textContent = data.mushroom_phase;
-                document.getElementById('phase-select').value = data.mushroom_phase;
+            
+            // Update Atlas status
+            const atlasStatusText = document.getElementById('atlas-status-text');
+            const atlasStatus = document.getElementById('atlas-status');
+            
+            if (data.atlas_connected) {
+                atlasStatusText.textContent = 'Connected';
+                atlasStatus.className = 'atlas-indicator atlas-connected';
+            } else {
+                atlasStatusText.textContent = 'Offline';
+                atlasStatus.className = 'atlas-indicator atlas-offline';
             }
         });
 
@@ -674,10 +690,19 @@
                 .then(response => response.json())
                 .then(data => {
                     document.getElementById('db-type').textContent = data.database;
-                    if (data.mushroom_phase) {
-                        document.getElementById('current-phase').textContent = data.mushroom_phase;
-                        document.getElementById('phase-select').value = data.mushroom_phase;
+                    
+                    // Update Atlas status
+                    const atlasStatusText = document.getElementById('atlas-status-text');
+                    const atlasStatus = document.getElementById('atlas-status');
+                    
+                    if (data.atlas_connected) {
+                        atlasStatusText.textContent = 'Connected';
+                        atlasStatus.className = 'atlas-indicator atlas-connected';
+                    } else {
+                        atlasStatusText.textContent = 'Offline';
+                        atlasStatus.className = 'atlas-indicator atlas-offline';
                     }
+                    
                     if (data.controls) {
                         updateControlsDisplay(data.controls);
                     }
@@ -734,24 +759,7 @@
             .catch(error => console.error('Error controlling lights:', error));
         }
         
-        function changePhase() {
-            const newPhase = document.getElementById('phase-select').value;
-            fetch('/api/phase', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({phase: newPhase})
-            })
-            .then(response => response.json())
-            .then(data => {
-                if (data.success) {
-                    console.log(data.message);
-                    document.getElementById('current-phase').textContent = newPhase;
-                } else {
-                    alert('Error changing phase: ' + data.message);
-                }
-            })
-            .catch(error => console.error('Error changing phase:', error));
-        }
+
 
         // Initialize dashboard
         document.addEventListener('DOMContentLoaded', function() {
@@ -766,8 +774,7 @@
                 loadDatabaseStatus();
             }, 30000);
             
-            // Set default phase in selector
-            document.getElementById('phase-select').value = 'pinning';
+
         });
     </script>
 </body>
