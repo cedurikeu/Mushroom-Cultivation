@@ -18,8 +18,8 @@ from gpiozero import DistanceSensor, LED, OutputDevice
 import adafruit_scd4x
 import board
 import busio
-import adafruit_mcp3xxx.mcp3008 as MCP
-from adafruit_mcp3xxx.analog_in import AnalogIn
+import smbus2
+import struct
 
 # Import configuration
 from config import GPIO_CONFIG, MUSHROOM_CONFIG, SENSOR_CONFIG
@@ -268,6 +268,63 @@ class DatabaseService:
 db_service = DatabaseService()
 
 # ========================
+# BH1750 LIGHT SENSOR CLASS
+# ========================
+class BH1750:
+    """BH1750 Light Sensor Driver"""
+    
+    # Device I2C address
+    DEVICE_ADDRESS = 0x23  # Default address (ADDR pin = LOW)
+    # DEVICE_ADDRESS = 0x5C  # Alternative address (ADDR pin = HIGH)
+    
+    # Measurement modes
+    CONTINUOUS_HIGH_RES_MODE = 0x10
+    CONTINUOUS_HIGH_RES_MODE_2 = 0x11
+    CONTINUOUS_LOW_RES_MODE = 0x13
+    ONE_TIME_HIGH_RES_MODE = 0x20
+    ONE_TIME_HIGH_RES_MODE_2 = 0x21
+    ONE_TIME_LOW_RES_MODE = 0x23
+    
+    def __init__(self, bus_number=1):
+        """Initialize BH1750 sensor"""
+        try:
+            self.bus = smbus2.SMBus(bus_number)
+            self.address = self.DEVICE_ADDRESS
+            print(f"✅ BH1750 initialized on I2C bus {bus_number}, address 0x{self.address:02X}")
+        except Exception as e:
+            print(f"❌ BH1750 initialization failed: {e}")
+            self.bus = None
+    
+    def read_light_level(self):
+        """Read light level in lux"""
+        try:
+            if not self.bus:
+                return None
+            
+            # Send measurement command (one-time high resolution mode)
+            self.bus.write_byte(self.address, self.ONE_TIME_HIGH_RES_MODE)
+            
+            # Wait for measurement (max 180ms)
+            time.sleep(0.2)
+            
+            # Read 2 bytes of data
+            data = self.bus.read_i2c_block_data(self.address, 0x00, 2)
+            
+            # Convert to lux
+            light_level = (data[0] << 8 | data[1]) / 1.2
+            
+            return round(light_level, 1)
+            
+        except Exception as e:
+            print(f"❌ BH1750 read error: {e}")
+            return None
+    
+    def close(self):
+        """Close I2C bus"""
+        if self.bus:
+            self.bus.close()
+
+# ========================
 # GPIO CONTROL SERVICE
 # ========================
 class GPIOControlService:
@@ -384,14 +441,8 @@ class SensorService:
             print("🔄 Starting SCD40 periodic measurement...")
             self.scd40.start_periodic_measurement()
             
-            # SPI setup for MCP3008 ADC (for light sensor)
-            spi = busio.SPI(clock=getattr(board, f'D{GPIO_CONFIG["SPI_CLK"]}'),
-                          MISO=getattr(board, f'D{GPIO_CONFIG["SPI_MISO"]}'),
-                          MOSI=getattr(board, f'D{GPIO_CONFIG["SPI_MOSI"]}'))
-            cs = getattr(board, f'D{GPIO_CONFIG["SPI_CS"]}')
-            
-            self.mcp = MCP.MCP3008(spi, cs)
-            self.light_sensor = AnalogIn(self.mcp, MCP.P0)  # Channel 0 for light
+            # BH1750 light sensor (I2C)
+            self.bh1750 = BH1750(bus_number=1)
             
             # Setup ultrasonic sensor using GPIO Zero
             self.water_sensor = DistanceSensor(
@@ -402,12 +453,12 @@ class SensorService:
             
             print("✅ Sensors initialized successfully")
             print("  - SCD40 (Temperature, Humidity, CO2) on I2C")
-            print("  - Light sensor via MCP3008 ADC")
+            print("  - BH1750 (Light Intensity) on I2C")
             print("  - Ultrasonic water level sensor (GPIO Zero)")
         except Exception as e:
             print(f"❌ Sensor setup error: {e}")
             self.scd40 = None
-            self.mcp = None
+            self.bh1750 = None
             self.water_sensor = None
     
     def read_ultrasonic_distance(self):
@@ -465,12 +516,12 @@ class SensorService:
                         data['co2'] = int(co2 + SENSOR_CONFIG['calibration_offsets']['co2'])
                         print(f"📡 SCD40 readings: T={temp:.1f}°C, H={humidity:.1f}%, CO2={co2}ppm")
             
-            # Read light sensor (photoresistor via ADC)
-            if hasattr(self, 'light_sensor') and self.light_sensor:
-                light_voltage = self.light_sensor.voltage
-                # Convert voltage to light intensity (0-1000 range)
-                light_intensity = int((light_voltage / 3.3) * 1000)
-                data['light_intensity'] = light_intensity + SENSOR_CONFIG['calibration_offsets']['light_intensity']
+            # Read BH1750 light sensor
+            if hasattr(self, 'bh1750') and self.bh1750:
+                light_lux = self.bh1750.read_light_level()
+                if light_lux is not None:
+                    data['light_intensity'] = int(light_lux + SENSOR_CONFIG['calibration_offsets']['light_intensity'])
+                    print(f"💡 BH1750 light reading: {light_lux:.1f} lux")
             
             # Read water level via ultrasonic sensor
             distance = self.read_ultrasonic_distance()
@@ -637,7 +688,7 @@ def sensor_monitor():
             socketio.emit('sensor_update', update_data)
             
             # Log current values
-            print(f"📊 T: {sensor_data['temperature']}°C, H: {sensor_data['humidity']}%, CO2: {sensor_data['co2']}ppm, Light: {sensor_data['light_intensity']}, Water: {sensor_data['water_level']}%")
+            print(f"📊 T: {sensor_data['temperature']}°C, H: {sensor_data['humidity']}%, CO2: {sensor_data['co2']}ppm, Light: {sensor_data['light_intensity']} lux, Water: {sensor_data['water_level']}%")
             
             time.sleep(SENSOR_READ_INTERVAL)
             
